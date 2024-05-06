@@ -3,20 +3,26 @@
 
 from libcpp.vector cimport vector
 from libc.math cimport sqrt, fabs
+import numpy as np
+cimport numpy as cnp
+
+cdef double distance(double a, double b):
+    return sqrt(a*a + b*b)
 
 
-cdef double get_water_velocity_vector(int x, int y, int size_x, int size_y, vector[vector[vector[double]]] flow) noexcept:
+cdef double get_water_velocity_vector(int x, int y, int size_x, int size_y, double[:, :, :] flow):
     cdef double left = flow[x - 1][y][0] - flow[x][y][2] if x > 1 else 0.0 
     cdef double right = flow[x][y][0] - flow[x + 1][y][2] if x < size_x - 1 else 0.0 
     cdef double bottom = flow[x][y - 1][1] - flow[x][y][3] if y > 1 else 0.0 
     cdef double top = flow[x][y][1] - flow[x][y + 1][3] if y < size_y - 1 else 0.0 
     
-    return sqrt(0.5 * ((left + right)**2 + (top + bottom)**2))
+    #return sqrt(0.5 * (sqr(left + right) + sqr(top + bottom)))
+    return distance(0.5 * (left + right), 0.5 * (top + bottom))
 
 
 # I decided to code it in the same way normals are computed
 # so the average steepness, or, the first derivative
-cdef double get_steepness(int x, int y, int size_x, int size_y, vector[vector[double]] heightmap) noexcept:
+cdef double get_steepness(int x, int y, int size_x, int size_y, double[:, :] heightmap):
     cdef int[4] delta_x = [ 1, 0, -1, 0 ]
     cdef int[4] delta_y = [ 0, 1, 0, -1 ]
     cdef int i = 0
@@ -30,13 +36,14 @@ cdef double get_steepness(int x, int y, int size_x, int size_y, vector[vector[do
             delta_h = heightmap[x][y] - heightmap[x + delta_x[i]][y + delta_y[i]]
             steepness[0] += delta_x[i] * delta_h
             steepness[1] += delta_y[i] * delta_h
-    return sqrt(steepness[0]**2 + steepness[1]**2)
+    #return sqrt(sqr(steepness[0]) + sqr(steepness[1]))
+    return distance(steepness[0], steepness[1])
 
 
 # similar to a second derivative
 # positive = bump
 # negative = hole
-cdef double get_convexness(int x, int y, int size_x, int size_y, vector[vector[double]] heightmap) noexcept:
+cdef double get_convexness(int x, int y, int size_x, int size_y, double[:, :] heightmap):
     cdef int[4] delta_x = [ 1, 0, -1, 0 ]
     cdef int[4] delta_y = [ 0, 1, 0, -1 ]
     cdef int i = 0
@@ -50,24 +57,28 @@ cdef double get_convexness(int x, int y, int size_x, int size_y, vector[vector[d
             delta_h = heightmap[x][y] - heightmap[x + delta_x[i]][y + delta_y[i]]
             convexness[0] += fabs(delta_x[i]) * delta_h
             convexness[1] += fabs(delta_y[i]) * delta_h
-    return sqrt(convexness[0]**2 + convexness[1]**2)
+    #return sqrt(sqr(convexness[0]) + sqr(convexness[1]))
+    return distance(convexness[0], convexness[1])
 
 
-cpdef erode(unsigned int size_x, unsigned int size_y, vector[vector[double]] heightmap, vector[vector[double]] water, vector[vector[double]] previous_water, vector[vector[double]] sediment, vector[vector[vector[double]]] flow):
+cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _water, list _previous_water, list _sediment, list _flow):
     # our universal iterators
     cdef unsigned int i, j, x, y;
 
-    print("eroder version = 9")
+    # this is edited manually, I just use it to make sure that Blender loads the correct file (often doesn't)
+    print("eroder version = 15")
 
-    """     
-    # convert from lame Python types to glorious Cython types
-    cdef vector[vector[double]] heightmap
-    heightmap.resize(size_x)
-    for i in range(size_x):
-        heightmap[i].resize(size_y)
-        for j in range(size_y):
-            heightmap[i][j] = _heightmap[i][j] + 1 
-    """
+    # converts lists into memory views
+    cdef cnp.ndarray[cnp.float64_t, ndim=2] __heightmap = np.array(_heightmap, dtype=np.float64)
+    cdef double[:, :] heightmap = __heightmap
+    cdef cnp.ndarray[cnp.float64_t, ndim=2] __water = np.array(_water, dtype=np.float64)
+    cdef double[:, :] water = __water
+    cdef cnp.ndarray[cnp.float64_t, ndim=2] __previous_water = np.array(_previous_water, dtype=np.float64)
+    cdef double[:, :] previous_water = __previous_water
+    cdef cnp.ndarray[cnp.float64_t, ndim=2] __sediment = np.array(_sediment, dtype=np.float64)
+    cdef double[:, :] sediment = __sediment
+    cdef cnp.ndarray[cnp.float64_t, ndim=3] __flow = np.array(_flow, dtype=np.float64)
+    cdef double[:, :, :] flow = __flow
 
     cdef unsigned int step = 0, steps = 10
     cdef int[4][3] neighbors = [[1, 0, 0], [0, 1, 1], [-1, 0, 2], [0, -1, 3]]
@@ -89,7 +100,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, vector[vector[double]] hei
     cdef double local_shape_factor
     cdef double sediment_capacity
 
-    print("starting erosion...")
+    print("starting erosion...") 
         
     for step in range(steps):
         print("step no. " + str(step))
@@ -97,7 +108,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, vector[vector[double]] hei
         # reset water2
         water2.resize(size_x)
         for x in range(size_x):
-            water2.at(x).resize(size_y, 0.0)    
+            water2.at(x).resize(size_y, 0.0)   
 
         for x in range(size_x):
             for y in range(size_y):
@@ -162,18 +173,16 @@ cpdef erode(unsigned int size_x, unsigned int size_y, vector[vector[double]] hei
                         
                 else:
                     water2[x][y] = water[x][y]
-                            
-                previous_water[x][y] = water[x][y]
                 
     
         # update terrain and water heights
         #water = water2
         for x in range(size_x):
             for y in range(size_y):
+                previous_water[x][y] = water[x][y]
                 water[x][y] = water2[x][y]
 
     print("done")
 
-    # If possible, C values and C++ objects are automatically
-    # converted to Python objects at need.
-    return (heightmap, water, previous_water, sediment, flow)  # so here, the vector will be copied into a Python list.
+    # return a ctuple (or tuple? tbh nobody cares, it works) of Python lists by converting a memoryview into a numpy array and then converting that into a regular array
+    return (np.array(heightmap).tolist(), np.array(water).tolist(), np.array(previous_water).tolist(), np.array(sediment).tolist(), np.array(flow).tolist()) 

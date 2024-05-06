@@ -16,7 +16,7 @@ bl_info = {
     "author" : "cxivo",
     "description" : "",
     "blender" : (4, 0, 0),
-    "version" : (0, 0, 1),
+    "version" : (0, 0, 2),
     "location": "View3D > Add > Mesh > New Terrain",
     "description": "Adds a new Terrain",
     "warning" : "",
@@ -528,7 +528,7 @@ def register():
     bpy.utils.register_manual_map(add_object_manual_map)
     bpy.types.VIEW3D_MT_mesh_add.append(add_object_button)
     bpy.utils.register_class(TerrainSidePanel)
-    print("version = 6")
+    print("version = 15")
 
 
 def unregister():
