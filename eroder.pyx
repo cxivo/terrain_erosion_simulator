@@ -1,4 +1,5 @@
 # distutils: language=c++
+# cython: language_level=3, cdivision=True
 
 from libcpp.vector cimport vector
 from libc.math cimport sqrt, fabs
@@ -120,7 +121,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, vector[vector[double]] hei
                             
                     # scale flow
                     scaling = 1.0
-                    if flow_sum > length * length * water[x][y]:
+                    if flow_sum > length * length * water[x][y] and flow_sum > 0:
                         scaling = length * length * water[x][y] / flow_sum
                         flow_sum = length * length * water[x][y]
                         
