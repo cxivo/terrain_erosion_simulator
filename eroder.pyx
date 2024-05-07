@@ -5,16 +5,25 @@ from libcpp.vector cimport vector
 from libc.math cimport sqrt, fabs
 import numpy as np
 cimport numpy as cnp
+from libc.stdlib cimport rand
+
+cdef extern from "stdlib.h":
+    int RAND_MAX
+cdef double BETTER_RAND_MAX = RAND_MAX
 
 cdef double distance(double a, double b):
     return sqrt(a*a + b*b)
 
 
+cdef double random(double low=0.0, double high=1.0):
+    return low + (rand() / BETTER_RAND_MAX) * (high - low)
+
+
 cdef double get_water_velocity_vector(int x, int y, int size_x, int size_y, double[:, :, :] flow):
-    cdef double left = flow[x - 1][y][0] - flow[x][y][2] if x > 1 else 0.0 
-    cdef double right = flow[x][y][0] - flow[x + 1][y][2] if x < size_x - 1 else 0.0 
-    cdef double bottom = flow[x][y - 1][1] - flow[x][y][3] if y > 1 else 0.0 
-    cdef double top = flow[x][y][1] - flow[x][y + 1][3] if y < size_y - 1 else 0.0 
+    cdef double left = flow[(x - 1) % size_x][y][0] - flow[x][y][2] # if x > 1 else 0.0 
+    cdef double right = flow[x][y][0] - flow[(x + 1) % size_x][y][2] # if x < size_x - 1 else 0.0 
+    cdef double bottom = flow[x][(y - 1) % size_y][1] - flow[x][y][3] # if y > 1 else 0.0 
+    cdef double top = flow[x][y][1] - flow[x][(y + 1) % size_y][3] # if y < size_y - 1 else 0.0 
     
     #return sqrt(0.5 * (sqr(left + right) + sqr(top + bottom)))
     return distance(0.5 * (left + right), 0.5 * (top + bottom))
@@ -22,22 +31,13 @@ cdef double get_water_velocity_vector(int x, int y, int size_x, int size_y, doub
 
 # I decided to code it in the same way normals are computed
 # so the average steepness, or, the first derivative
+# nvm, it's sine now
 cdef double get_steepness(int x, int y, int size_x, int size_y, double[:, :] heightmap):
-    cdef int[4] delta_x = [ 1, 0, -1, 0 ]
-    cdef int[4] delta_y = [ 0, 1, 0, -1 ]
-    cdef int i = 0
-    cdef double delta_h
-        
-    # x, y, magnitude
-    cdef double[3] steepness = [0.0, 0.0, 0.0]
-    
-    for i in range(4):        
-        if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
-            delta_h = heightmap[x][y] - heightmap[x + delta_x[i]][y + delta_y[i]]
-            steepness[0] += delta_x[i] * delta_h
-            steepness[1] += delta_y[i] * delta_h
-    #return sqrt(sqr(steepness[0]) + sqr(steepness[1]))
-    return distance(steepness[0], steepness[1])
+    cdef double dx = abs(heightmap[(x - 1) % size_x][y] - heightmap[(x + 1) % size_x][y])
+    cdef double dy = abs(heightmap[x][(y - 1) % size_y] - heightmap[x][(y + 1) % size_y])
+  
+    # assumes length = 1.0
+    return sqrt(dx**2 + dy**2) / sqrt(dx**2 + dy**2 + 1.0**2)
 
 
 # similar to a second derivative
@@ -50,23 +50,37 @@ cdef double get_convexness(int x, int y, int size_x, int size_y, double[:, :] he
     cdef double delta_h
         
     # x, y, magnitude
-    cdef double[3] convexness = [0.0, 0.0, 0.0]
+    cdef double cx = 0.0, cy = 0.0
     
     for i in range(4):        
-        if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
-            delta_h = heightmap[x][y] - heightmap[x + delta_x[i]][y + delta_y[i]]
-            convexness[0] += fabs(delta_x[i]) * delta_h
-            convexness[1] += fabs(delta_y[i]) * delta_h
-    #return sqrt(sqr(convexness[0]) + sqr(convexness[1]))
-    return distance(convexness[0], convexness[1])
+        #if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
+        delta_h = heightmap[x][y] - heightmap[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y]
+        cx += 0.5 * fabs(delta_x[i]) * delta_h
+        cy += 0.5 * fabs(delta_y[i]) * delta_h
+    
+    # assumes length = 1.0
+    return 0.5 * (cx + cy) / sqrt((0.5 * (cx + cy))**2 + 1.0**2)
+
+
+# adding more water than the max_depth will not speed up the erosion
+# source: that Balazs paper
+cdef double max_erosion_depth(double depth):
+    cdef double max_depth = 0.45
+    if depth >= max_depth:
+        return 1.0
+    elif 0 < depth < max_depth:
+        return 1.0 - (max_depth - depth) / max_depth
+    else:
+        return 0.0
 
 
 cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _water, list _previous_water, list _sediment, list _flow):
     # our universal iterators
-    cdef unsigned int i, j, x, y;
+    cdef unsigned int i, j, x, y
+    cdef int si, sj
 
     # this is edited manually, I just use it to make sure that Blender loads the correct file (often doesn't)
-    print("eroder version = 18")
+    print("eroder version = 21")
 
     # converts lists into memory views
     cdef cnp.ndarray[cnp.float64_t, ndim=2] __heightmap = np.array(_heightmap, dtype=np.float64)
@@ -80,17 +94,23 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     cdef cnp.ndarray[cnp.float64_t, ndim=3] __flow = np.array(_flow, dtype=np.float64)
     cdef double[:, :, :] flow = __flow
 
-    cdef unsigned int step = 0, steps = 1
+    #cdef cnp.ndarray[cnp.float64_t, ndim=3] soil_names = np.array(_soil_names, dtype=np.float64)
+    #cdef cnp.ndarray[cnp.float64_t, ndim=3] soil_thickness = np.array(_soil_thickness, dtype=np.float64)
+
+
+    cdef unsigned int step = 0, steps = 5
     cdef int[4][3] neighbors = [[1, 0, 0], [0, 1, 1], [-1, 0, 2], [0, -1, 3]]
     cdef double length = 1.0
     cdef double area = length * length
     cdef double g = 9.81
-    cdef double c = 0.1
+    cdef double c = 0.25
     cdef double delta_t = 0.1 
     cdef int[4] delta_x = [ 1, 0, -1, 0 ]
     cdef int[4] delta_y = [ 0, 1, 0, -1 ]
 
     cdef vector[vector[double]] water2
+    cdef vector[vector[double]] sediment2
+    cdef vector[vector[double]] heightmap2
     cdef double[4] acceleration = [0.0, 0.0, 0.0, 0.0]
     cdef double delta_height
     cdef double scaling
@@ -98,36 +118,86 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     cdef double local_shape_factor
     cdef double sediment_capacity
     cdef double out_volume_sum
+    cdef double[3][3] neighbors_delta_height
+    cdef double talus_angle_tan = 0.577  # 30 degrees
 
     print("starting erosion...") 
+
+    # resize vectors
+    water2.resize(size_x)
+    sediment2.resize(size_x)
+    heightmap2.resize(size_x)
+    for x in range(size_x):
+        water2.at(x).resize(size_y, 0.0)
+        sediment2.at(x).resize(size_y, 0.0)
+        heightmap2.at(x).resize(size_y, 0.0)
         
+
     for step in range(steps):
         print("step no. " + str(step))
 
-        # reset water2
-        water2.resize(size_x)
+        # reset vectors
         for x in range(size_x):
-            water2.at(x).resize(size_y, 0.0)   
+            for y in range(size_y):
+                water2[x][y] = 0.0 
+                sediment2[x][y] = 0.0 
+                heightmap2[x][y] = heightmap[x][y]
+
+        
+        ######################################################
+        # THERMAL EROSION
+        ######################################################
+        for x in range(size_x):
+            for y in range(size_y):
+                neighbors_delta_height = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]] 
+                delta_h_sum = 0.0
+                max_delta = 0.0
+
+                for si in range(-1, 2):
+                    for sj in range(-1, 2):
+                        if si != 0 or sj != 0:
+                            delta = heightmap[x][y] - heightmap[(x + si) % size_x][(y + sj) % size_y]
+
+                            if delta > max_delta:
+                                max_delta = delta
+
+                            if delta / length >= talus_angle_tan:
+                                neighbors_delta_height[si + 1][sj + 1] = delta
+                                delta_h_sum += delta
+                                
+                
+                height_to_move = delta_t * 0.5 * max_delta * random(0.9, 1.1)  # maybe times local hardness
+
+                if delta_h_sum > 0:
+                    for si in range(-1, 2):
+                        for sj in range(-1, 2):
+                            if si != 0 or sj != 0:
+                                heightmap2[(x + si) % size_x][(y + sj) % size_y] += height_to_move * neighbors_delta_height[si + 1][sj + 1] / delta_h_sum
+                    
+                heightmap2[x][y] -= height_to_move
 
         for x in range(size_x):
             for y in range(size_y):
-                if water[x][y] > 0:
-                    ######################################################
-                    # MOVE WATER
-                    ######################################################
-                    
+                heightmap[x][y] = heightmap2[x][y]      
+
+        ######################################################
+        # MOVE WATER
+        ######################################################
+        for x in range(size_x):
+            for y in range(size_y):
+                if water[x][y] > 0:                    
                     height_here = heightmap[x][y] + water[x][y]
                     acceleration = [0.0, 0.0, 0.0, 0.0]
                     out_volume_sum = 0.0
                     
                     # calculate the height differences with neighbors and flow
                     for i in range(4):
-                        if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
-                            height_neighbor = heightmap[x + delta_x[i]][y + delta_y[i]] + water[x + delta_x[i]][ y + delta_y[i]]
-                            delta_height = height_here - height_neighbor
-                            acceleration[i] = g * delta_height / length
-                            flow[x][y][i] = max(0.0, flow[x][y][i] + (delta_t * acceleration[i] * length * length))
-                            out_volume_sum += delta_t * flow[x][y][i]
+                        #if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
+                        height_neighbor = heightmap[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] + water[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y]
+                        delta_height = height_here - height_neighbor
+                        acceleration[i] = g * delta_height / length
+                        flow[x][y][i] = max(0.0, flow[x][y][i] + (delta_t * acceleration[i] * length * length))
+                        out_volume_sum += delta_t * flow[x][y][i]
                             
                     # scale flow
                     scaling = 1.0
@@ -139,26 +209,42 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                         
                     # add to neighbors
                     for i in range(4):
-                        if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
-                            flow[x][y][i] *= scaling
-                            water2[x + delta_x[i]][y + delta_y[i]] += flow[x][y][i] * delta_t / area
-                            
-                    water2[x][y] += water[x][y] - (out_volume_sum / area)
-                    
+                        #if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
+                        flow[x][y][i] *= scaling
+                        water2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += flow[x][y][i] * delta_t / area
 
-                    ######################################################
-                    # FORCE EROSION
-                    ######################################################
+                        # move sediment
+                        sediment_fraction = flow[x][y][i] * delta_t / column_water
+                        sediment2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += sediment[x][y] * sediment_fraction
+                        
+                    water2[x][y] += water[x][y] - (out_volume_sum / area)
+                    sediment2[x][y] += sediment[x][y] * (1 - out_volume_sum/column_water)
+
+
+        for x in range(size_x):
+            for y in range(size_y):
+                previous_water[x][y] = water[x][y]
+                water[x][y] = water2[x][y]
+                sediment[x][y] = sediment2[x][y]
+                sediment2[x][y] = 0.0
+
+
+        ######################################################
+        # FORCE EROSION
+        ######################################################
+        for x in range(size_x):
+            for y in range(size_y):
+                if water[x][y] > 0:
                     average_height = 0.5 * (water[x][y] + previous_water[x][y])
 
                     # this max function doesn't really have a physical basis, but it makes sure that small amounts of water don't erode ridiculous amounts
-                    average_height = max(average_height, 0.2)
+                    average_height = max(average_height, 0.1)
 
-                    flow_velocity = get_water_velocity_vector(x, y, size_x, size_y, flow)
+                    flow_velocity = get_water_velocity_vector(x, y, size_x, size_y, flow) / (length * average_height)
 
                     # steepness and convexness
-                    local_shape_factor = 1.0 * (get_steepness(x, y, size_x, size_y, heightmap) + 0.25 * get_convexness(x, y, size_x, size_y, heightmap))
-                    sediment_capacity = (flow_velocity / (length * average_height)) * c * local_shape_factor
+                    #local_shape_factor = max(0.0, 1.0 * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) + 0.0 * get_convexness(x, y, size_x, size_y, heightmap))
+                    sediment_capacity = flow_velocity * c * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) * max_erosion_depth(water[x][y])
                     
                     if sediment[x][y] <= sediment_capacity:
                         # erode
@@ -171,16 +257,36 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                         heightmap[x][y] += amount
                         sediment[x][y] -= amount
                         
-                else:
+                """ else:
                     # might be useless?
                     water2[x][y] += water[x][y]
+                    sediment2[x][y] += sediment[x][y] """
                 
-    
-        # update terrain and water heights
+
+        ######################################################
+        # DIFFUSE SEDIMENT
+        ######################################################
         for x in range(size_x):
             for y in range(size_y):
-                previous_water[x][y] = water[x][y]
-                water[x][y] = water2[x][y]
+                # using a filter where the neighbors have weights of 0.5 and the column itself has a weight of 1.0
+                # so the sum is 1.0 + 4*0.5 = 3.0
+                base = 1.0 * water[x][y]
+                for i in range(4):
+                    base += 0.5 * water[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y]
+
+                if base > 0:
+                    sediment2[x][y] += sediment[x][y] * 1.0 * water[x][y] / base
+                    for i in range(4):
+                        sediment2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += sediment[x][y] * 0.5 * water[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] / base
+                else:
+                    sediment2[x][y] += sediment[x][y]
+
+        # update sediment again
+        for x in range(size_x):
+            for y in range(size_y):
+                sediment[x][y] = sediment2[x][y]
+
+
 
     print("done")
 

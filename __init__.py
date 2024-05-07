@@ -528,7 +528,7 @@ def register():
     bpy.utils.register_manual_map(add_object_manual_map)
     bpy.types.VIEW3D_MT_mesh_add.append(add_object_button)
     bpy.utils.register_class(TerrainSidePanel)
-    print("version = 15")
+    print("version = 20")
 
 
 def unregister():
