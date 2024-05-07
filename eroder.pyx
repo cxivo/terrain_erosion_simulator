@@ -119,7 +119,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     cdef double sediment_capacity
     cdef double out_volume_sum
     cdef double[3][3] neighbors_delta_height
-    cdef double talus_angle_tan = 0.577  # 30 degrees
+    cdef double talus_angle_tan = 1.0  # 45 degrees
 
     print("starting erosion...") 
 
@@ -158,10 +158,13 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                         if si != 0 or sj != 0:
                             delta = heightmap[x][y] - heightmap[(x + si) % size_x][(y + sj) % size_y]
 
-                            if delta > max_delta:
-                                max_delta = delta
-
+                            # if should erode
                             if delta / length >= talus_angle_tan:
+                                # largest difference
+                                if delta > max_delta:
+                                    max_delta = delta
+
+                                # save for later reference
                                 neighbors_delta_height[si + 1][sj + 1] = delta
                                 delta_h_sum += delta
                                 
@@ -226,7 +229,6 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                 previous_water[x][y] = water[x][y]
                 water[x][y] = water2[x][y]
                 sediment[x][y] = sediment2[x][y]
-                sediment2[x][y] = 0.0
 
 
         ######################################################
@@ -251,17 +253,19 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                         amount = 0.5 * (sediment_capacity - sediment[x][y])
                         heightmap[x][y] -= amount
                         sediment[x][y] += amount
+                        water[x][y] += amount
                     else:
                         # deposit
                         amount = 0.25 * (sediment[x][y] - sediment_capacity)
                         heightmap[x][y] += amount
                         sediment[x][y] -= amount
+                        water[x][y] -= amount
                         
-                """ else:
-                    # might be useless?
-                    water2[x][y] += water[x][y]
-                    sediment2[x][y] += sediment[x][y] """
                 
+        for x in range(size_x):
+            for y in range(size_y):
+                sediment2[x][y] = 0
+                water2[x][y] = water[x][y]
 
         ######################################################
         # DIFFUSE SEDIMENT
@@ -276,8 +280,11 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
 
                 if base > 0:
                     sediment2[x][y] += sediment[x][y] * 1.0 * water[x][y] / base
+                    water2[x][y] -= sediment[x][y] * (1.0 - (1.0 * water[x][y] / base))
                     for i in range(4):
-                        sediment2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += sediment[x][y] * 0.5 * water[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] / base
+                        amount = sediment[x][y] * 0.5 * water[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] / base
+                        sediment2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += amount
+                        water2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += amount
                 else:
                     sediment2[x][y] += sediment[x][y]
 
@@ -285,6 +292,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
         for x in range(size_x):
             for y in range(size_y):
                 sediment[x][y] = sediment2[x][y]
+                water[x][y] = water2[x][y]
 
 
 
