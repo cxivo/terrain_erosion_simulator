@@ -74,7 +74,7 @@ cdef double max_erosion_depth(double depth):
         return 0.0
 
 
-cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _water, list _previous_water, list _sediment, list _flow):
+cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _water, list _previous_water, list _sediment, list _flow, list _regolith):
     # our universal iterators
     cdef unsigned int i, j, x, y
     cdef int si, sj
@@ -93,6 +93,8 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     cdef double[:, :] sediment = __sediment
     cdef cnp.ndarray[cnp.float64_t, ndim=3] __flow = np.array(_flow, dtype=np.float64)
     cdef double[:, :, :] flow = __flow
+    cdef cnp.ndarray[cnp.float64_t, ndim=2] __regolith = np.array(_regolith, dtype=np.float64)
+    cdef double[:, :] regolith = __regolith
 
     #cdef cnp.ndarray[cnp.float64_t, ndim=3] soil_names = np.array(_soil_names, dtype=np.float64)
     #cdef cnp.ndarray[cnp.float64_t, ndim=3] soil_thickness = np.array(_soil_thickness, dtype=np.float64)
@@ -103,13 +105,16 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     cdef double length = 1.0
     cdef double area = length * length
     cdef double g = 9.81
-    cdef double c = 0.25
+    cdef double erosion_constant = 0.1
+    cdef double max_penetration_depth = 0.01
+    cdef double regolith_constant = 0.5
     cdef double delta_t = 0.1 
     cdef int[4] delta_x = [ 1, 0, -1, 0 ]
     cdef int[4] delta_y = [ 0, 1, 0, -1 ]
 
     cdef vector[vector[double]] water2
     cdef vector[vector[double]] sediment2
+    cdef vector[vector[double]] regolith2
     cdef vector[vector[double]] heightmap2
     cdef double[4] acceleration = [0.0, 0.0, 0.0, 0.0]
     cdef double delta_height
@@ -127,10 +132,12 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     water2.resize(size_x)
     sediment2.resize(size_x)
     heightmap2.resize(size_x)
+    regolith2.resize(size_x)
     for x in range(size_x):
         water2.at(x).resize(size_y, 0.0)
         sediment2.at(x).resize(size_y, 0.0)
         heightmap2.at(x).resize(size_y, 0.0)
+        regolith2.at(x).resize(size_y, 0.0)
         
 
     for step in range(steps):
@@ -142,6 +149,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                 water2[x][y] = 0.0 
                 sediment2[x][y] = 0.0 
                 heightmap2[x][y] = heightmap[x][y]
+                regolith2[x][y] = 0.0
 
         
         ######################################################
@@ -219,9 +227,11 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                         # move sediment
                         sediment_fraction = flow[x][y][i] * delta_t / column_water
                         sediment2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += sediment[x][y] * sediment_fraction
+                        regolith2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += regolith[x][y] * sediment_fraction
                         
                     water2[x][y] += water[x][y] - (out_volume_sum / area)
                     sediment2[x][y] += sediment[x][y] * (1 - out_volume_sum/column_water)
+                    regolith2[x][y] += regolith[x][y] * (1 - out_volume_sum/column_water)
 
 
         for x in range(size_x):
@@ -229,6 +239,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                 previous_water[x][y] = water[x][y]
                 water[x][y] = water2[x][y]
                 sediment[x][y] = sediment2[x][y]
+                regolith[x][y] = regolith2[x][y]
 
 
         ######################################################
@@ -246,21 +257,45 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
 
                     # steepness and convexness
                     #local_shape_factor = max(0.0, 1.0 * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) + 0.0 * get_convexness(x, y, size_x, size_y, heightmap))
-                    sediment_capacity = flow_velocity * c * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) * max_erosion_depth(water[x][y])
+                    sediment_capacity = flow_velocity * erosion_constant * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) * max_erosion_depth(water[x][y])
                     
                     if sediment[x][y] <= sediment_capacity:
                         # erode
                         amount = 0.5 * (sediment_capacity - sediment[x][y])
                         heightmap[x][y] -= amount
                         sediment[x][y] += amount
-                        water[x][y] += amount
+                        #water[x][y] += amount
                     else:
                         # deposit
                         amount = 0.25 * (sediment[x][y] - sediment_capacity)
                         heightmap[x][y] += amount
                         sediment[x][y] -= amount
-                        water[x][y] -= amount
+                        #water[x][y] -= amount
                         
+
+        ######################################################
+        # REGOLITH EROSION
+        ######################################################
+        for x in range(size_x):
+            for y in range(size_y):
+                if water[x][y] > 0:
+                    # max regolith
+                    max_regolith_thickness = max_penetration_depth
+                    if water[x][y] < max_penetration_depth:
+                        max_regolith_thickness = water[x][y]
+
+                    # always maintain max regolith (no idea why)
+                    if regolith[x][y] < max_regolith_thickness:
+                        # regolithise (not a real word)
+                        amount = max_regolith_thickness - regolith[x][y]
+                        heightmap[x][y] -= amount
+                        regolith[x][y] += amount
+                    else:
+                        # deposit
+                        amount = regolith[x][y] - max_regolith_thickness
+                        heightmap[x][y] += amount
+                        regolith[x][y] -= amount
+
                 
         for x in range(size_x):
             for y in range(size_y):
@@ -280,11 +315,11 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
 
                 if base > 0:
                     sediment2[x][y] += sediment[x][y] * 1.0 * water[x][y] / base
-                    water2[x][y] -= sediment[x][y] * (1.0 - (1.0 * water[x][y] / base))
+                    #water2[x][y] -= sediment[x][y] * (1.0 - (1.0 * water[x][y] / base))
                     for i in range(4):
                         amount = sediment[x][y] * 0.5 * water[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] / base
                         sediment2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += amount
-                        water2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += amount
+                        #water2[(x + delta_x[i]) % size_x][(y + delta_y[i]) % size_y] += amount
                 else:
                     sediment2[x][y] += sediment[x][y]
 
@@ -299,4 +334,4 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     print("done")
 
     # return a ctuple (or tuple? tbh nobody cares, it works) of Python lists by converting a memoryview into a numpy array and then converting that into a regular array
-    return (np.array(heightmap).tolist(), np.array(water).tolist(), np.array(previous_water).tolist(), np.array(sediment).tolist(), np.array(flow).tolist()) 
+    return (np.array(heightmap).tolist(), np.array(water).tolist(), np.array(previous_water).tolist(), np.array(sediment).tolist(), np.array(flow).tolist(), np.array(regolith).tolist()) 

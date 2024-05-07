@@ -67,6 +67,8 @@ def add_object(self, context):
     bpy.context.active_object["previous_heightdata"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
     bpy.context.active_object["sediment"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
     bpy.context.active_object["flow"] = [[[0.0, 0.0, 0.0, 0.0] for x in range(self.size_x)] for y in range(self.size_y)]
+    bpy.context.active_object["regolith"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
+
     
     # z-fighting-fighter
     bpy.context.active_object.location.z -= 0.005  # good enough
@@ -238,7 +240,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
        
         #water = add_rain(water)
         
-        self.heightmap, self.water, self.previous_water, self.sediment, self.flow = erode(size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow)
+        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith = erode(size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith)
 
         """ 
         # whatever
@@ -374,6 +376,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.flow = context.active_object.children[0]["flow"]
         self.previous_water = context.active_object.children[0]["previous_heightdata"]
         self.sediment = context.active_object.children[0]["sediment"]
+        self.regolith = context.active_object.children[0]["regolith"]
         
         
     def save_everything(self):
@@ -382,6 +385,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         set_water_heightmap(self.context, self.size_x, self.size_y, self.water, self.heightmap)
         self.context.active_object.children[0]["flow"] = self.flow
         self.context.active_object.children[0]["sediment"] = self.sediment
+        self.context.active_object.children[0]["regolith"] = self.regolith
 
 
     # [x, y, magnitude]
