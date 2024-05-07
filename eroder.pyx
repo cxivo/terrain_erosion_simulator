@@ -66,7 +66,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     cdef unsigned int i, j, x, y;
 
     # this is edited manually, I just use it to make sure that Blender loads the correct file (often doesn't)
-    print("eroder version = 15")
+    print("eroder version = 18")
 
     # converts lists into memory views
     cdef cnp.ndarray[cnp.float64_t, ndim=2] __heightmap = np.array(_heightmap, dtype=np.float64)
@@ -80,12 +80,10 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     cdef cnp.ndarray[cnp.float64_t, ndim=3] __flow = np.array(_flow, dtype=np.float64)
     cdef double[:, :, :] flow = __flow
 
-    cdef unsigned int step = 0, steps = 10
+    cdef unsigned int step = 0, steps = 1
     cdef int[4][3] neighbors = [[1, 0, 0], [0, 1, 1], [-1, 0, 2], [0, -1, 3]]
     cdef double length = 1.0
-    cdef double reciprocal_length = 1.0 / length
     cdef double area = length * length
-    cdef double reciprocal_area = 1.0 / area
     cdef double g = 9.81
     cdef double c = 0.1
     cdef double delta_t = 0.1 
@@ -99,6 +97,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     cdef double flow_velocity
     cdef double local_shape_factor
     cdef double sediment_capacity
+    cdef double out_volume_sum
 
     print("starting erosion...") 
         
@@ -119,30 +118,32 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                     
                     height_here = heightmap[x][y] + water[x][y]
                     acceleration = [0.0, 0.0, 0.0, 0.0]
-                    flow_sum = 0.0
+                    out_volume_sum = 0.0
                     
                     # calculate the height differences with neighbors and flow
                     for i in range(4):
                         if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
                             height_neighbor = heightmap[x + delta_x[i]][y + delta_y[i]] + water[x + delta_x[i]][ y + delta_y[i]]
                             delta_height = height_here - height_neighbor
-                            acceleration[i] = g * delta_height * reciprocal_length
+                            acceleration[i] = g * delta_height / length
                             flow[x][y][i] = max(0.0, flow[x][y][i] + (delta_t * acceleration[i] * length * length))
-                            flow_sum += delta_t * flow[x][y][i]
+                            out_volume_sum += delta_t * flow[x][y][i]
                             
                     # scale flow
                     scaling = 1.0
-                    if flow_sum > length * length * water[x][y] and flow_sum > 0:
-                        scaling = length * length * water[x][y] / flow_sum
-                        flow_sum = length * length * water[x][y]
+                    column_water = length * length * water[x][y]
+                    
+                    if out_volume_sum > column_water and out_volume_sum > 0:
+                        scaling = column_water / out_volume_sum
+                        out_volume_sum = column_water
                         
                     # add to neighbors
                     for i in range(4):
                         if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
                             flow[x][y][i] *= scaling
-                            water2[x + delta_x[i]][y + delta_y[i]] += flow[x][y][i] * delta_t * reciprocal_area
+                            water2[x + delta_x[i]][y + delta_y[i]] += flow[x][y][i] * delta_t / area
                             
-                    water2[x][y] += water[x][y] - (flow_sum * reciprocal_area)
+                    water2[x][y] += water[x][y] - (out_volume_sum / area)
                     
 
                     ######################################################
@@ -157,7 +158,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
 
                     # steepness and convexness
                     local_shape_factor = 1.0 * (get_steepness(x, y, size_x, size_y, heightmap) + 0.25 * get_convexness(x, y, size_x, size_y, heightmap))
-                    sediment_capacity = (flow_velocity * reciprocal_length / average_height) * c * local_shape_factor
+                    sediment_capacity = (flow_velocity / (length * average_height)) * c * local_shape_factor
                     
                     if sediment[x][y] <= sediment_capacity:
                         # erode
@@ -170,13 +171,12 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                         heightmap[x][y] += amount
                         sediment[x][y] -= amount
                         
-                        
                 else:
-                    water2[x][y] = water[x][y]
+                    # might be useless?
+                    water2[x][y] += water[x][y]
                 
     
         # update terrain and water heights
-        #water = water2
         for x in range(size_x):
             for y in range(size_y):
                 previous_water[x][y] = water[x][y]
