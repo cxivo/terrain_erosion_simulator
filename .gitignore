@@ -1,3 +1,5 @@
 *.cpp
 *.so
 /build
+eroder_failed.pyx
+eroder_vectors.pyx

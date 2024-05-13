@@ -24,6 +24,7 @@ bl_info = {
 }
 
 
+import json
 import bpy
 import math
 from bpy_extras.object_utils import AddObjectHelper, object_data_add
@@ -65,7 +66,7 @@ def add_object(self, context):
     bpy.context.active_object["is_water"] = True
     bpy.context.active_object["heightdata"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
     bpy.context.active_object["previous_heightdata"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
-    bpy.context.active_object["sediment"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
+    bpy.context.active_object["sediment"] = [[0.0, 0.0, 0.0, 0.0, 0.0] for y in range(self.size_y) for x in range(self.size_x)]
     bpy.context.active_object["flow"] = [[[0.0, 0.0, 0.0, 0.0] for x in range(self.size_x)] for y in range(self.size_y)]
     bpy.context.active_object["regolith"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
 
@@ -98,6 +99,9 @@ def add_object(self, context):
     bpy.context.active_object["size_y"] = self.size_y
     bpy.context.active_object["is_terrain"] = True
     bpy.context.active_object["heightdata"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
+    bpy.context.active_object["topsoil"] = [[0.0, 0.0, 0.0, 0.0, 0.0] for y in range(self.size_y) for x in range(self.size_x)]
+    bpy.context.active_object["subsoil"] = [[0.0, 0.0, 0.0, 0.0, 0.0] for y in range(self.size_y) for x in range(self.size_x)]
+    bpy.context.active_object["bedrock"] = [[0, 1000000.0] for y in range(self.size_y) for x in range(self.size_x)]
     
     # materials
     bpy.context.active_object.data.materials.append(bpy.data.materials.get("ground"))
@@ -146,10 +150,14 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
         size_x = context.active_object["size_x"]
         size_y = context.active_object["size_y"]
         heightmap = context.active_object["heightdata"]
+        topsoil = context.active_object["topsoil"]
+        subsoil = context.active_object["subsoil"]
+        bedrock = context.active_object["bedrock"]
+
         
-        def get_noise(x, y):
+        def get_noise(x, y, seed):
             sample_scale = 0.025
-            position = (sample_scale * x, sample_scale * y, 0)
+            position = (sample_scale * (x + seed * size_x), sample_scale * (y + seed * size_y), 0)
             fractal_dimension = 1.0
             lacunarity = 3
             octaves = 3
@@ -162,26 +170,68 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
                 octaves,
                 offset
             )
+        
+        def get_wrapping_noise(x, y, seed):
+            coef_x = x / size_x
+            coef_y = y / size_y
+            return 1.0 * (
+                    coef_y * (
+                        coef_x * get_noise(x, y, seed) 
+                        + (1 - coef_x) * get_noise(x + size_x, y, seed)
+                    ) 
+                    + (1 - coef_y) * ( 
+                        coef_x * get_noise(x, y + size_y, seed)
+                        + (1 - coef_x) * get_noise(x + size_x, y + size_y, seed)
+                    )
+                )
 
+        # define heights
         for x in range(size_x):
             for y in range(size_y):
                 amplitude = 20.0
-                coef_x = x / size_x
-                coef_y = y / size_y
-                heightmap[x][y] = amplitude * (
-                        coef_y * (
-                            coef_x * get_noise(x, y) 
-                            + (1 - coef_x) * get_noise(x + size_x, y)
-                        ) 
-                        + (1 - coef_y) * ( 
-                            coef_x * get_noise(x, y + size_y)
-                            + (1 - coef_x) * get_noise(x + size_x, y + size_y)
-                        )
-                    )
-                ####!
-                #heightmap[x][y] = 0.2*x
+                heightmap[x][y] = 2.0 + amplitude + amplitude * get_wrapping_noise(x, y, 0)
                 
-                
+        # define soil layers
+        for x in range(size_x):
+            for y in range(size_y):
+                topsoil[y + size_y * x] = [0.25, 0.1, 0.0, 0.0, 0.9] # 1.25
+                subsoil[y + size_y * x] = [0.25, 0.5, 0.25, 0.0, 1.25] # 2.25
+                bedrock[y + size_y * x] = [0, 1000000.0] # rest, formerly heightmap[x][y] - 1.25 - 2.25
+
+        # temporary particle system
+        if False:
+            # vertex group
+            vertex_group = context.active_object.vertex_groups.new(name = 'verteks_grup')
+
+            # particle system
+            bpy.ops.object.particle_system_add()
+            particle_system_name = bpy.data.particles[-1].name
+            # set it to hair -> object
+            bpy.data.particles[particle_system_name].type = 'HAIR'
+            bpy.data.particles[particle_system_name].render_type = 'OBJECT'
+            bpy.data.particles[particle_system_name].child_type = 'INTERPOLATED'
+            # set it to the object Boulder
+            bpy.data.particles[particle_system_name].instance_object = bpy.data.objects["boulder"]
+
+
+            for x in range(size_x):
+                for y in range(size_y):
+                    vertex_group.add([y + size_y * x], min(max(heightmap[x][y] - 20.0, 0.0), 1.0), 'REPLACE')
+
+            # assign vertex group
+            bpy.context.active_object.particle_systems[0].vertex_group_density = 'verteks_grup' 
+
+
+        # create a texture image
+        bpy.data.images.new('topsoil_texture', size_x, size_y)
+        #topsoil_texture = bpy.data.images['topsoil_texture']
+
+        
+
+        context.active_object["topsoil"] = topsoil
+        context.active_object["subsoil"] = subsoil
+        context.active_object["bedrock"] = bedrock
+
         set_heightmap(context, size_x, size_y, heightmap)
         heightmap = context.active_object["heightdata"]
         # update water heights as well
@@ -239,8 +289,10 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         size_y = self.size_y
        
         #water = add_rain(water)
-        
-        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith = erode(size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith)
+        # the main thing
+        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, topsoil_texture = erode(size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock)
+
+        bpy.data.images['topsoil_texture'].pixels = topsoil_texture
 
         """ 
         # whatever
@@ -377,6 +429,9 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.previous_water = context.active_object.children[0]["previous_heightdata"]
         self.sediment = context.active_object.children[0]["sediment"]
         self.regolith = context.active_object.children[0]["regolith"]
+        self.topsoil = context.active_object["topsoil"]
+        self.subsoil = context.active_object["subsoil"]
+        self.bedrock = context.active_object["bedrock"]
         
         
     def save_everything(self):
@@ -386,6 +441,9 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.context.active_object.children[0]["flow"] = self.flow
         self.context.active_object.children[0]["sediment"] = self.sediment
         self.context.active_object.children[0]["regolith"] = self.regolith
+        self.context.active_object["topsoil"] = self.topsoil 
+        self.context.active_object["subsoil"] = self.subsoil
+        self.context.active_object["bedrock"] = self.bedrock
 
 
     # [x, y, magnitude]
