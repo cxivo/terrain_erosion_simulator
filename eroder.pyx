@@ -363,6 +363,16 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
     cdef int[4] delta_x = [ 1, 0, -1, 0 ]
     cdef int[4] delta_y = [ 0, 1, 0, -1 ]
 
+    cdef double organic_constant = 0.12
+    cdef double[4][4] rock_matrix_linear = [[0.15,  0.0,  0.0,  0.0],
+                                            [0.04,  0.08, 0.0,  0.0],
+                                            [0.04,  0.02, 0.04, 0.0],
+                                            [0.04,  0.02, 0.01, 0.02]]
+    cdef double[4][4] rock_matrix_constant = [[ 0.0,   0.0,   0.0,  0.0],
+                                              [-0.01, -0.1,   0.0,  0.0],
+                                              [-0.02, -0.2,  -0.3,  0.0],
+                                              [-0.03, -0.25, -0.4, -0.5]]
+
     cdef vector[vector[double]] water2
     cdef vector[vector[Soil]] sediment
     cdef vector[vector[Soil]] sediment2
@@ -586,7 +596,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                     water_info = 0.25 * flow_velocity * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) * max_erosion_depth(water[x][y])
                     
                     # organic
-                    sediment_capacity = 0.1 * water_info
+                    sediment_capacity = organic_constant * water_info
                     if sediment[x][y].organic <= sediment_capacity:
                         # erode
                         requested_amount = 0.5 * (sediment_capacity - sediment[x][y].organic)
@@ -602,22 +612,27 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                         sediment[x][y].organic -= amount
                         #water[x][y] -= amount
 
-                    # rocks
-                    for i in range(4):
-                        sediment_capacity = max((0.15 * water_info / (i + 1)) - 0.2 * i, 0.0)
-                        if sediment[x][y].rocks[i] <= sediment_capacity:
-                        # erode
-                            requested_amount = 0.5 * (sediment_capacity - sediment[x][y].rocks[i])
-                            amount = erode_rocks_amount(terrain[x][y], requested_amount, i)
-                            heightmap[x][y] -= amount
-                            sediment[x][y].rocks[i] += amount
-                            #water[x][y] += amount
-                        else:
+                    # erode rocks
+                    for original in range(4):
+                        for sedimented in range(4):
+                            sediment_capacity = max(rock_matrix_linear[original][sedimented] * water_info + rock_matrix_constant[original][sedimented], 0.0)
+                            if sediment[x][y].rocks[sedimented] <= sediment_capacity:
+                            # erode
+                                requested_amount = 0.5 * (sediment_capacity - sediment[x][y].rocks[original])
+                                amount = erode_rocks_amount(terrain[x][y], requested_amount, original)
+                                heightmap[x][y] -= amount
+                                sediment[x][y].rocks[sedimented] += amount
+                                #water[x][y] += amount
+                            
+                    # deposit rocks
+                    for rock in range(4):      
+                        sediment_capacity = max(rock_matrix_linear[rock][rock] * water_info + rock_matrix_constant[rock][rock], 0.0)
+                        if sediment[x][y].rocks[rock] > sediment_capacity:
                             # deposit
-                            amount = 0.25 * (sediment[x][y].rocks[i] - sediment_capacity)
-                            deposit_soil(terrain[x][y], new_soil_rock(amount, i))
+                            amount = 0.25 * (sediment[x][y].rocks[rock] - sediment_capacity)
+                            deposit_soil(terrain[x][y], new_soil_rock(amount, rock))
                             heightmap[x][y] += amount
-                            sediment[x][y].rocks[i] -= amount
+                            sediment[x][y].rocks[rock] -= amount
                             #water[x][y] -= amount
                         
 

@@ -188,7 +188,7 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
         # define heights
         for x in range(size_x):
             for y in range(size_y):
-                amplitude = 20.0
+                amplitude = 15.0
                 heightmap[x][y] = 2.0 + amplitude + amplitude * get_wrapping_noise(x, y, 0)
                 
         # define soil layers
