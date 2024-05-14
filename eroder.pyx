@@ -31,14 +31,22 @@ cdef bint eq(double a, double b):
     return False
 
 
-cdef double get_water_velocity_vector(int x, int y, int size_x, int size_y, double[:, :, :] flow):
+cdef double water_velocity(int x, int y, int size_x, int size_y, double[:, :, :] flow):
     cdef double left = flow[mod(x - 1, size_x)][y][0] - flow[x][y][2] # if x > 1 else 0.0 
     cdef double right = flow[x][y][0] - flow[mod(x + 1, size_x)][y][2] # if x < size_x - 1 else 0.0 
     cdef double bottom = flow[x][mod(y - 1, size_y)][1] - flow[x][y][3] # if y > 1 else 0.0 
     cdef double top = flow[x][y][1] - flow[x][mod(y + 1, size_y)][3] # if y < size_y - 1 else 0.0 
     
-    #return sqrt(0.5 * (sqr(left + right) + sqr(top + bottom)))
     return distance(0.5 * (left + right), 0.5 * (top + bottom))
+
+
+cdef (double, double) water_velocity_vector(int x, int y, int size_x, int size_y, double[:, :, :] flow):
+    cdef double left = flow[mod(x - 1, size_x)][y][0] - flow[x][y][2] # if x > 1 else 0.0 
+    cdef double right = flow[x][y][0] - flow[mod(x + 1, size_x)][y][2] # if x < size_x - 1 else 0.0 
+    cdef double bottom = flow[x][mod(y - 1, size_y)][1] - flow[x][y][3] # if y > 1 else 0.0 
+    cdef double top = flow[x][y][1] - flow[x][mod(y + 1, size_y)][3] # if y < size_y - 1 else 0.0 
+    
+    return (0.5 * (left + right), 0.5 * (top + bottom))
 
 
 # I decided to code it in the same way normals are computed
@@ -127,6 +135,7 @@ cdef int TYPE = 0
 cdef int HEIGHT = 1
 
 cdef double MAX_TOPSOIL_HEIGHT = 1.5
+cdef double MAX_WATER_SPEED = 20.0  # source: made up
 
 cdef Soil EMPTY_SOIL
 EMPTY_SOIL.organic = 0.0
@@ -186,8 +195,8 @@ cdef Soil normalized(Soil soil):
 
 # returns Soil with same ratios, but scaled by fraction
 cdef Soil soil_fraction(Soil soil, double fraction):
-    if not (0.0 <= fraction <= 1.0):
-        print("Invalid fraction value: " + str(fraction))
+    #if not (0.0 <= fraction <= 1.0):
+    #    print("Invalid fraction value: " + str(fraction))
 
     # sometimes 1.0000000000000002 comes up and I don't like it
     if fraction > 1.0:
@@ -257,8 +266,8 @@ cdef double get_soil_talus(Soil soil):
 
 # returns Water with same ratios, but scaled by fraction
 cdef Water water_fraction(Water water, double fraction):
-    if not (0.0 <= fraction <= 1.0):
-        print("Invalid fraction value: " + str(fraction))
+    #if not (0.0 <= fraction <= 1.0):
+    #    print("Invalid fraction value: " + str(fraction))
 
     # sometimes 1.0000000000000002 comes up and I don't like it
     if fraction > 1.0:
@@ -292,6 +301,23 @@ cdef void add_to_water(Water& a, Water b):
     # previous water is handled differently
     a.velocity_x = a.velocity_x * velocity_multiplier + b.velocity_x * (1.0 - velocity_multiplier)
     a.velocity_y = a.velocity_y * velocity_multiplier + b.velocity_y * (1.0 - velocity_multiplier)
+
+
+cdef Water speedup(Water water, double x, double y):
+    water.velocity_x += x
+    water.velocity_y += y
+    return water
+
+
+# MODIFIES ARGUMENT
+cdef void clip_speed(Water& water):
+    cdef double scaling = 1.0
+    cdef double velocity = sqrt(water.velocity_x**2 + water.velocity_y**2)
+
+    if velocity > MAX_WATER_SPEED:
+        scaling = MAX_WATER_SPEED / velocity
+        water.velocity_x *= scaling
+        water.velocity_y *= scaling
 
 
 ##################################################
@@ -374,10 +400,30 @@ cdef double erode_rocks_amount(Horizon& horizon, double requested_amount, int in
         return 0.0
 
 
+# MODIFIES ARGUMENT
+cdef double erode_organic_amount_only_from(Soil& soil, double requested_amount):
+    cdef double amount_remove
+    requested_amount = max(0.0, requested_amount)
+
+    amount_remove = min(soil.organic, requested_amount)
+    soil.organic -= amount_remove
+    return amount_remove
+
+
+# MODIFIES ARGUMENT
+cdef double erode_rocks_amount_only_from(Soil& soil, double requested_amount, int index):
+    cdef double amount_remove
+    requested_amount = max(0.0, requested_amount)
+
+    amount_remove = min(soil.rocks[index], requested_amount)
+    soil.rocks[index] -= amount_remove
+    return amount_remove
+
+
 
 ##################################################
 ##################################################
-cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _water, list _previous_water, list _sediment, list _flow, list _regolith, list _topsoil, list _subsoil, list _bedrock):
+cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double max_penetration_depth, double regolith_constant, double inertial_erosion_constant, bint is_river, double source_height, unsigned int size_x, unsigned int size_y, list _heightmap, list _water, list _previous_water, list _sediment, list _flow, list _regolith, list _topsoil, list _subsoil, list _bedrock):
     # our universal iterators
     cdef unsigned int i, j, x, y
     cdef int si, sj
@@ -393,15 +439,11 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
 
 
 
-    cdef unsigned int step = 0, steps = 1
+    cdef unsigned int step = 0
     cdef int[4][3] neighbors = [[1, 0, 0], [0, 1, 1], [-1, 0, 2], [0, -1, 3]]
     cdef double length = 1.0
     cdef double area = length * length
     cdef double g = 9.81
-    cdef double erosion_constant = 0.1
-    cdef double max_penetration_depth = 0.01
-    cdef double regolith_constant = 0.5
-    cdef double delta_t = 0.1 
     cdef int[4] delta_x = [ 1, 0, -1, 0 ]
     cdef int[4] delta_y = [ 0, 1, 0, -1 ]
 
@@ -485,6 +527,18 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
 
     for step in range(steps):
         print("step no. " + str(step))
+
+        ######################################################
+        # RIVER MODE
+        ######################################################
+
+        if is_river:
+            # source
+            water[size_x / 2][size_y / 16].height = source_height
+
+            for x in range(size_x):
+                for y in range(15 * size_y / 16, size_y):
+                    water[x][y] = EMPTY_WATER
    
         ######################################################
         # GRAVITATIONAL EROSION
@@ -595,22 +649,18 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                         
                     # add to neighbors
                     for i in range(4):
-                        #if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
                         flow[x][y][i] *= scaling
-                        # += flow[x][y][i] * delta_t / area
+
+                        delta_v_x = delta_t * acceleration[i] * delta_x[i]
+                        delta_v_y = delta_t * acceleration[i] * delta_y[i]
 
                         # move sediment
                         fraction = flow[x][y][i] * delta_t / column_water
-                        add_to_water(water2[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)], water_fraction(water[x][y], fraction))
-                        #add_to_soil(sediment2[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)], soil_fraction(sediment[x][y], fraction))
-                        #regolith2[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)] += regolith[x][y] * fraction
-                        
+                        add_to_water(water2[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)], 
+                                    speedup(water_fraction(water[x][y], fraction), delta_v_x, delta_v_y))
                     # what remains here
                     add_to_water(water2[x][y], water_fraction(water[x][y], 1 - out_volume_sum/column_water))
-                    
-                    """ water2[x][y] += water[x][y] - (out_volume_sum / area)
-                    add_to_soil(sediment2[x][y], soil_fraction(sediment[x][y], (1 - out_volume_sum/column_water)))
-                    regolith2[x][y] += regolith[x][y] * (1 - out_volume_sum/column_water) """
+
 
         # assign
         for x in range(size_x):
@@ -618,6 +668,7 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                 previous = water[x][y].height
                 water[x][y] = water2[x][y]
                 water[x][y].previous = previous
+                clip_speed(water[x][y])
 
 
         ######################################################
@@ -631,12 +682,12 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
                     # this max function doesn't really have a physical basis, but it makes sure that small amounts of water don't erode ridiculous amounts
                     average_height = max(average_height, 0.05)
 
-                    flow_velocity = get_water_velocity_vector(x, y, size_x, size_y, flow) / (length * average_height)
+                    flow_velocity = water_velocity(x, y, size_x, size_y, flow) / (length * average_height)
 
                     # steepness and convexness
                     #local_shape_factor = max(0.0, 1.0 * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) + 0.0 * get_convexness(x, y, size_x, size_y, heightmap))
                     # no erosion_constant
-                    water_info = 0.25 * flow_velocity * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) * max_erosion_depth(water[x][y].height)
+                    water_info = erosion_constant * flow_velocity * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) * max_erosion_depth(water[x][y].height)
                     
                     # organic
                     sediment_capacity = organic_constant * water_info
@@ -682,7 +733,81 @@ cpdef erode(unsigned int size_x, unsigned int size_y, list _heightmap, list _wat
         ######################################################
         # INERTIAL EROSION
         ######################################################
-        
+        for x in range(size_x):
+            for y in range(size_y):
+                if water[x][y].height > 0.0:
+                    velocity = water_velocity_vector(x, y, size_x, size_y, flow)
+
+                    water_top = heightmap[x][y] + water[x][y].height
+                    water_bottom = heightmap[x][y]
+                    
+                    for i in range(4):
+                        velocity_in_direction = max(0.0, velocity[0]*delta_x[i] + velocity[1]*delta_y[i])
+
+                        height_top = heightmap[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)]
+                        height_bottom = height_top - get_soil_height(terrain[x][y].topsoil)
+
+                        # TOPSOIL
+                        # calculate contact area
+                        contact_top = min(water_top, height_top)
+                        contact_bottom = max(water_bottom, height_bottom)
+                        contact_area = max(0.0, contact_top - contact_bottom) * length
+
+                        erosion_capacity = inertial_erosion_constant * velocity_in_direction * contact_area / MAX_WATER_SPEED
+
+                        if erosion_capacity > 0.0:
+
+                            # organic
+                            sediment_capacity = organic_constant * erosion_capacity
+                            #if water[x][y].sediment.organic <= sediment_capacity:
+                            # erode
+                            requested_amount = 0.5 * sediment_capacity
+                            amount = erode_organic_amount_only_from(terrain[x][y].topsoil, requested_amount)
+
+                            heightmap[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)] -= amount
+                            water[x][y].sediment.organic += amount
+                                
+                            # erode rocks
+                            for original in range(4):
+                                for sedimented in range(4):
+                                    sediment_capacity = max(rock_matrix_linear[original][sedimented] * erosion_capacity + rock_matrix_constant[original][sedimented], 0.0)
+                                    #if water[x][y].sediment.rocks[sedimented] <= sediment_capacity:
+                                    # erode
+                                    requested_amount = 0.5 * sediment_capacity
+                                    amount = erode_rocks_amount_only_from(terrain[x][y].topsoil, requested_amount, original)
+                                    heightmap[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)] -= amount
+                                    water[x][y].sediment.rocks[sedimented] += amount
+
+                            # SUBSOIL
+                            # calculate contact area
+                            contact_top = min(water_top, height_bottom)
+                            contact_bottom = max(water_bottom, height_bottom - get_soil_height(terrain[x][y].subsoil))
+                            contact_area = max(0.0, contact_top - contact_bottom) * length
+
+                            erosion_capacity = inertial_erosion_constant * velocity_in_direction * contact_area / MAX_WATER_SPEED
+
+                            # organic
+                            sediment_capacity = organic_constant * erosion_capacity
+                            #if water[x][y].sediment.organic <= sediment_capacity:
+                            # erode
+                            requested_amount = 0.5 * sediment_capacity
+                            amount = erode_organic_amount_only_from(terrain[x][y].subsoil, requested_amount)
+
+                            heightmap[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)] -= amount
+                            water[x][y].sediment.organic += amount
+                                
+                            # erode rocks
+                            for original in range(4):
+                                for sedimented in range(4):
+                                    sediment_capacity = max(rock_matrix_linear[original][sedimented] * erosion_capacity + rock_matrix_constant[original][sedimented], 0.0)
+                                    #if water[x][y].sediment.rocks[sedimented] <= sediment_capacity:
+                                    # erode
+                                    requested_amount = 0.5 * sediment_capacity
+                                    amount = erode_rocks_amount_only_from(terrain[x][y].subsoil, requested_amount, original)
+                                    heightmap[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)] -= amount
+                                    water[x][y].sediment.rocks[sedimented] += amount
+                                
+                        
 
 
         ######################################################

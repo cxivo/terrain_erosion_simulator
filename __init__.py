@@ -247,7 +247,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
     bl_label = "Erode Terrain"
     bl_options = {'REGISTER', 'UNDO'}
     
-    steps: bpy.props.IntProperty(name="Steps", default=1, min=1)
+
     
     # cyclic array
     class CyclicArray(object):
@@ -272,146 +272,27 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         size_x = context.active_object["size_x"]
         size_y = context.active_object["size_y"]
         
-        # (dir x, dir y, index)
-        neighbors = [(1, 0, 0), (0, 1, 1), (-1, 0, 2), (0, -1, 3)]
-        length = 1.0
-        area = 1.0
-        g = 9.81
-        c = 0.1
-        delta_t = 0.1 
-        delta_x = [ 1, 0, -1, 0 ];
-        delta_y = [ 0, 1, 0, -1 ];
-        
         self.prepare_everything(context)
         
-
         size_x = self.size_x
         size_y = self.size_y
+
+        # props
+        steps = context.scene.Terrain.steps
+        delta_t = context.scene.Terrain.delta_t
+        erosion_constant = context.scene.Terrain.erosion_constant
+        inertial_erosion_constant = context.scene.Terrain.inertial_erosion_constant
+        max_penetration_depth = context.scene.Terrain.max_penetration_depth
+        regolith_constant = context.scene.Terrain.regolith_constant
+
+        is_river = context.scene.Terrain.is_river
+        source_height = context.scene.Terrain.source_height
        
         #water = add_rain(water)
         # the main thing
-        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, topsoil_texture = erode(size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock)
+        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, topsoil_texture = erode(steps, delta_t, erosion_constant, max_penetration_depth, regolith_constant, inertial_erosion_constant, is_river, source_height, size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock)
 
         bpy.data.images['topsoil_texture'].pixels = topsoil_texture
-
-        """ 
-        # whatever
-        print("old")
-        #TEMPORARY
-        steps = 10
-        
-        for step in range(steps):
-            #heightmap2 = [[0 for x in range(size_x)] for y in range(size_y)]
-            water2 = [[0 for x in range(size_x)] for y in range(size_y)]
-            
-            for x in range(size_x):
-                for y in range(size_y):
-                    if self.water[x][y] > 0:
-                        ######################################################
-                        # MOVE WATER
-                        ######################################################
-                        
-                        height_here = self.heightmap[x][y] + self.water[x][y]
-                        acceleration = [0.0, 0.0, 0.0, 0.0]
-                        flow_sum = 0.0
-                        
-                        # calculate the height differences with neighbors and flow
-                        for i in range(4):
-                            if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
-                                height_neighbor = self.heightmap[x + delta_x[i]][y + delta_y[i]] + self.water[x + delta_x[i]][ y + delta_y[i]]
-                                delta_height = height_here - height_neighbor
-                                acceleration[i] = g * delta_height / length
-                                self.flow[x][y][i] = max(0.0, self.flow[x][y][i] + (delta_t * acceleration[i] * length * length))
-                                flow_sum += delta_t * self.flow[x][y][i]
-                                
-                        # scale flow
-                        scaling = 1.0
-                        if flow_sum > length * length * self.water[x][y]:
-                            scaling = length * length * self.water[x][y] / flow_sum
-                            flow_sum = length * length * self.water[x][y]
-                            
-                        # add to neighbors
-                        for i in range(4):
-                            if (0 <= x + delta_x[i] < size_x) and (0 <= y + delta_y[i] < size_y):
-                                self.flow[x][y][i] *= scaling
-                                water2[x + delta_x[i]][y + delta_y[i]] += self.flow[x][y][i] * delta_t / (length * length)
-                                
-                        water2[x][y] += self.water[x][y] - (flow_sum / (length*length))
-                        
-                        ######################################################
-                        # FORCE EROSION
-                        ######################################################
-                        average_height = 0.5 * (self.water[x][y] + self.previous_water[x][y])
-
-                        # this max function doesn't really have a physical basis, but it makes sure that small amounts of water don't erode ridiculous amounts
-                        average_height = max(average_height, 0.2)
-
-                        flow_velocity = self.get_water_velocity_vector(x, y)
-
-                        # steepness and convexness
-                        local_shape_factor = 1.0 * (self.get_steepness(x, y)[2] + 0.25 * self.get_convexness(x, y)[2])
-                        sediment_capacity = (flow_velocity[2] / (length * average_height)) * c * local_shape_factor
-                        
-                        if self.sediment[x][y] <= sediment_capacity:
-                            # erode
-                            amount = 0.5 * (sediment_capacity - self.sediment[x][y])
-                            self.heightmap[x][y] -= amount
-                            self.sediment[x][y] += amount
-                        else:
-                            # deposit
-                            amount = 0.25 * (self.sediment[x][y] - sediment_capacity)
-                            self.heightmap[x][y] += amount
-                            self.sediment[x][y] -= amount
-                            
-                            
-                    else:
-                        water2[x][y] = self.water[x][y]
-                                
-                    self.previous_water[x][y] = self.water[x][y]
-                    
-                    if 1 == 0:
-                    #if water[x][y] != 0:
-                        # move water
-                        out_volume = [0, 0, 0, 0]
-                        
-                        for (dx, dy, dir) in neighbors:  
-                            if not (0 <= x + dx < size_x) or not (0 <= y + dy < size_y):
-                                 flow[x][y][dir] = 0
-                                 out_volume[dir] = 0
-                            else:
-                                #delta_height = (heightmap[x][y] + water[x][y]) - (heightmap[(x + dx) % size_x][(y + dy) % size_y] + water[(x + dx) % size_x][(y + dy) % size_y])    
-                                delta_height = -(heightmap[x][y] + water[x][y]) + (heightmap[x + dx][y + dy] + water[x + dx][y + dy])    
-                                
-                                acceleration = g * delta_height / length
-                                
-                                flow[x][y][dir] = max(0, flow[x][y][dir] + delta_t * area * acceleration)
-                                
-                                out_volume[dir] = max(0, delta_t * flow[x][y][dir])
-                            
-                        out_volume_sum = sum(out_volume)
-                        
-                        # scale water
-                        column_water = length * length * water[x][y]
-                        
-                        if out_volume_sum > column_water and out_volume_sum > 0:
-                            for i in range(4):
-                                out_volume[i] *= column_water / out_volume_sum
-                            out_volume_sum = column_water
-                        
-                        # move water
-                        water2[x][y] -= out_volume_sum      
-                        print(water2[x][y]) 
-                        
-                        for (dx, dy, dir) in neighbors: 
-                            if (0 <= x + dx < size_x) and (0 <= y + dy < size_y):
-                                water2[(x + dx) % size_x][(y + dy) % size_y] += out_volume[dir]
-                                
-                        if water2[x][y] < 0:
-                            water2[x][y] = 0.0
-        
-            # update terrain and water heights
-            self.water = water2
-            #heightmap = heightmap2 """
                         
         # set terrain and water heights
         self.save_everything()
@@ -444,53 +325,6 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.context.active_object["topsoil"] = self.topsoil 
         self.context.active_object["subsoil"] = self.subsoil
         self.context.active_object["bedrock"] = self.bedrock
-
-
-    # [x, y, magnitude]
-    def get_water_velocity_vector(self, x, y):
-        left = self.flow[x - 1][y][0] - self.flow[x][y][2] if x > 1 else 0.0 
-        right = self.flow[x][y][0] - self.flow[x + 1][y][2] if x < self.size_x - 1 else 0.0 
-        bottom = self.flow[x][y - 1][1] - self.flow[x][y][3] if y > 1 else 0.0 
-        top = self.flow[x][y][1] - self.flow[x][y + 1][3] if y < self.size_y - 1 else 0.0 
-        
-        return [0.5 * (left + right), 0.5 * (top + bottom), math.sqrt(0.5 * ((left + right)**2 + (top + bottom)**2))]
-
-
-    # I decided to code it in the same way normals are computed
-    # so the average steepness, or, the first derivative
-    def get_steepness(self, x, y):
-        delta_x = [ 1, 0, -1, 0 ];
-        delta_y = [ 0, 1, 0, -1 ];
-        
-        # x, y, magnitude
-        steepness = [0.0, 0.0, 0.0]
-        
-        for i in range(4):        
-            if (0 <= x + delta_x[i] < self.size_x) and (0 <= y + delta_y[i] < self.size_y):
-                delta_h = self.heightmap[x][y] - self.heightmap[x + delta_x[i]][y + delta_y[i]]
-                steepness[0] += delta_x[i] * delta_h
-                steepness[1] += delta_y[i] * delta_h
-        steepness[2] = math.sqrt(steepness[0]**2 + steepness[1]**2)
-        return steepness
-    
-    
-    # similar to a second derivative
-    # positive = bump
-    # negative = hole
-    def get_convexness(self, x, y):
-        delta_x = [ 1, 0, -1, 0 ];
-        delta_y = [ 0, 1, 0, -1 ];
-        
-        # x, y, magnitude
-        convexness = [0.0, 0.0, 0.0]
-        
-        for i in range(4):        
-            if (0 <= x + delta_x[i] < self.size_x) and (0 <= y + delta_y[i] < self.size_y):
-                delta_h = self.heightmap[x][y] - self.heightmap[x + delta_x[i]][y + delta_y[i]]
-                convexness[0] += abs(delta_x[i]) * delta_h
-                convexness[1] += abs(delta_y[i]) * delta_h
-        convexness[2] = math.sqrt(convexness[0]**2 + convexness[1]**2)
-        return convexness
         
 
 # returns a heightmap from the z coords of vertices... which might not be correct.
@@ -548,25 +382,49 @@ def add_rain(water):
 
 # UI
 
-class TerrainSidePanel(bpy.types.Panel):
+class TERRAIN_PT_Sidebar(bpy.types.Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    
     bl_category = "Terrain"
     bl_label = "Terrain settings"
     
     def draw(self, context):
-        row = self.layout.row()
-        row.operator("mesh.add_terrain", text="Add Terrain")
-        row = self.layout.row()
-        row.operator("mesh.modify_terrain", text="cesta tretej triedy")
-        row = self.layout.row()
-        row.operator("mesh.erode_terrain", text="zeroduj")
+        layout = self.layout
+        
+        layout.operator("mesh.add_terrain", text="Add Terrain")
+        layout.operator("mesh.modify_terrain", text="cesta tretej triedy")
+        
+        layout.prop(context.scene.Terrain, "steps")
+        layout.prop(context.scene.Terrain, "delta_t")
+        
+        #row = self.layout.row()
+        col = layout.column()
+        col.prop(context.scene.Terrain, "erosion_constant")
+        col.prop(context.scene.Terrain, "inertial_erosion_constant")
+        col.prop(context.scene.Terrain, "regolith_constant")
+        col.prop(context.scene.Terrain, "max_penetration_depth")
+
+        col = layout.column()
+        col.prop(context.scene.Terrain, "is_river")
+        col.prop(context.scene.Terrain, "source_height")
+
+        layout.operator("mesh.erode_terrain", text="zeroduj")
+
+
+# Property definitions
+class TERRAIN_PG_SceneProperties(bpy.types.PropertyGroup):
+    steps: bpy.props.IntProperty(name="Steps", default=1, min=1)
+    delta_t: bpy.props.FloatProperty(name="delta t", default=0.1, min=0.0000001, max=10)
+    erosion_constant: bpy.props.FloatProperty(name="erosion constant", default=0.25, min=0.0, max=10)
+    inertial_erosion_constant: bpy.props.FloatProperty(name="inertial erosion constant", default=0.25, min=0.0, max=100)
+    regolith_constant: bpy.props.FloatProperty(name="regolith constant", default=0.5, min=0.0, max=10)
+    max_penetration_depth: bpy.props.FloatProperty(name="maximum regolith penetration depth", default=0.01, min=0.0, max=2)
+    is_river: bpy.props.BoolProperty(name="River mode", default=False)
+    source_height: bpy.props.FloatProperty(name="River source height", default=1.0, min=0.0, max=20.0)
 
 
 
 # Registration
-
 def add_object_button(self, context):
     self.layout.operator(
         AddTerrainObject.bl_idname,
@@ -589,17 +447,21 @@ def register():
     bpy.utils.register_class(ErodeTerrainObject)
     bpy.utils.register_manual_map(add_object_manual_map)
     bpy.types.VIEW3D_MT_mesh_add.append(add_object_button)
-    bpy.utils.register_class(TerrainSidePanel)
+    bpy.utils.register_class(TERRAIN_PT_Sidebar)
+    bpy.utils.register_class(TERRAIN_PG_SceneProperties)
+    bpy.types.Scene.Terrain = bpy.props.PointerProperty(type=TERRAIN_PG_SceneProperties)
     print("version = 20")
 
 
 def unregister():
     bpy.utils.unregister_class(ErodeTerrainObject)
-    bpy.utils.unregister_class(TerrainSidePanel)
+    bpy.utils.unregister_class(TERRAIN_PG_SceneProperties)
+    bpy.utils.unregister_class(TERRAIN_PT_Sidebar)
     bpy.utils.unregister_class(AddTerrainObject)
     bpy.utils.unregister_class(InitTerrainObject)
     bpy.utils.unregister_manual_map(add_object_manual_map)
     bpy.types.VIEW3D_MT_mesh_add.remove(add_object_button)
+    del bpy.types.Scene.Terrain
 
 
 if __name__ == "__main__":
