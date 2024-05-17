@@ -33,22 +33,26 @@ from .eroder import erode
 
 
 def add_object(self, context):
+    self.scale = context.scene.Terrain.scale
+    self.size_x = context.scene.Terrain.size[0]
+    self.size_y = context.scene.Terrain.size[1]
+
     # creates a plane
     verts = [
         Vector(
-            (self.scale * (0.5 + x - self.size_x / 2), self.scale * (0.5 + y - self.size_y / 2), 0)
-        ) for y in range(self.size_y) for x in range(self.size_x)
+            (self.scale * (0.5 + y - self.size_y / 2), self.scale * (0.5 + x - self.size_x / 2), 0)
+        ) for x in range(self.size_x) for y in range(self.size_y)
     ]
 
     edges = []
     
     faces = [
         [
-            x + self.size_x * y, 
-            x + 1 + self.size_x * y,
-            x + 1 + self.size_x * (y + 1),
-            x + self.size_x * (y + 1)
-        ] for y in range(self.size_y - 1) for x in range(self.size_x - 1)
+            y + self.size_y * x, 
+            y + 1 + self.size_y * x,
+            y + 1 + self.size_y * (x + 1),
+            y + self.size_y * (x + 1)
+        ] for x in range(self.size_x - 1) for y in range(self.size_y - 1)
     ]
     
     
@@ -64,13 +68,15 @@ def add_object(self, context):
     bpy.context.active_object["size_x"] = self.size_x
     bpy.context.active_object["size_y"] = self.size_y
     bpy.context.active_object["is_water"] = True
-    bpy.context.active_object["heightdata"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
-    bpy.context.active_object["previous_heightdata"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
+    bpy.context.active_object["heightdata"] = [[0.0 for y in range(self.size_y)] for x in range(self.size_x)]
+    bpy.context.active_object["previous_heightdata"] = [[0.0 for y in range(self.size_y)] for x in range(self.size_x)]
     bpy.context.active_object["sediment"] = [[0.0, 0.0, 0.0, 0.0, 0.0] for y in range(self.size_y) for x in range(self.size_x)]
-    bpy.context.active_object["flow"] = [[[0.0, 0.0, 0.0, 0.0] for x in range(self.size_x)] for y in range(self.size_y)]
-    bpy.context.active_object["regolith"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
+    bpy.context.active_object["flow"] = [[[0.0, 0.0, 0.0, 0.0] for y in range(self.size_y)] for x in range(self.size_x)]
+    bpy.context.active_object["regolith"] = [[0.0 for y in range(self.size_y)] for x in range(self.size_x)]
+    bpy.context.active_object["velocity_x"] = [[0.0 for y in range(self.size_y)] for x in range(self.size_x)]
+    bpy.context.active_object["velocity_y"] = [[0.0 for y in range(self.size_y)] for x in range(self.size_x)]
 
-    
+
     # z-fighting-fighter
     bpy.context.active_object.location.z -= 0.005  # good enough
     
@@ -98,10 +104,11 @@ def add_object(self, context):
     bpy.context.active_object["size_x"] = self.size_x
     bpy.context.active_object["size_y"] = self.size_y
     bpy.context.active_object["is_terrain"] = True
-    bpy.context.active_object["heightdata"] = [[0.0 for x in range(self.size_x)] for y in range(self.size_y)]
+    bpy.context.active_object["heightdata"] = [[0.0 for y in range(self.size_y)] for x in range(self.size_x)]
     bpy.context.active_object["topsoil"] = [[0.0, 0.0, 0.0, 0.0, 0.0] for y in range(self.size_y) for x in range(self.size_x)]
     bpy.context.active_object["subsoil"] = [[0.0, 0.0, 0.0, 0.0, 0.0] for y in range(self.size_y) for x in range(self.size_x)]
     bpy.context.active_object["bedrock"] = [[0, 1000000.0] for y in range(self.size_y) for x in range(self.size_x)]
+
     
     # materials
     bpy.context.active_object.data.materials.append(bpy.data.materials.get("ground"))
@@ -116,6 +123,8 @@ def add_object(self, context):
     # set terrain as active object
     bpy.context.view_layer.objects.active = terrain_object
 
+    print("New terrain, size_x=" + str(self.size_x) + ", size_y=" + str(self.size_y))
+
 
 class AddTerrainObject(bpy.types.Operator, AddObjectHelper):
     """Create a new Terrain"""
@@ -123,9 +132,10 @@ class AddTerrainObject(bpy.types.Operator, AddObjectHelper):
     bl_label = "Add Terrain"
     bl_options = {'REGISTER', 'UNDO'}
 
-    scale: bpy.props.FloatProperty(name="Scale", default=1.0, min=0.0)
+    """ scale: bpy.props.FloatProperty(name="Scale", default=1.0, min=0.0)
     size_x: bpy.props.IntProperty(name="Size X", default=128, min=8)
     size_y: bpy.props.IntProperty(name="Size Y", default=128, min=8)
+    """
 
     def execute(self, context):
 
@@ -154,21 +164,24 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
         subsoil = context.active_object["subsoil"]
         bedrock = context.active_object["bedrock"]
 
+        print("heightdata size_x=" + str(len(heightmap)) + ", size_y=" + str(len(heightmap[0])))
+
         
         def get_noise(x, y, seed):
-            sample_scale = 0.025
+            sample_scale = context.scene.Terrain.sample_scale / 1000.0
             position = (sample_scale * (x + seed * size_x), sample_scale * (y + seed * size_y), 0)
-            fractal_dimension = 1.0
-            lacunarity = 3
-            octaves = 3
-            offset = 0.0
+            fractal_dimension = context.scene.Terrain.fractal_dimension
+            lacunarity = context.scene.Terrain.lacunarity
+            octaves = context.scene.Terrain.octaves
+            offset = context.scene.Terrain.offset
             
             return noise.hetero_terrain(
                 position,
                 fractal_dimension, 
                 lacunarity, 
                 octaves,
-                offset
+                offset,
+                noise_basis=context.scene.Terrain.noise_type
             )
         
         def get_wrapping_noise(x, y, seed):
@@ -186,9 +199,10 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
                 )
 
         # define heights
+        amplitude = context.scene.Terrain.amplitude
+        
         for x in range(size_x):
             for y in range(size_y):
-                amplitude = 15.0
                 heightmap[x][y] = 2.0 + amplitude + amplitude * get_wrapping_noise(x, y, 0)
                 
         # define soil layers
@@ -223,7 +237,15 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
 
 
         # create a texture image
+        # try deleting the old one
+        try:
+            old = bpy.data.images['topsoil_texture']
+            bpy.data.images.remove(old)
+        except:
+            pass
+        
         bpy.data.images.new('topsoil_texture', size_x, size_y)
+
         #topsoil_texture = bpy.data.images['topsoil_texture']
 
         
@@ -235,7 +257,7 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
         set_heightmap(context, size_x, size_y, heightmap)
         heightmap = context.active_object["heightdata"]
         # update water heights as well
-        set_water_heightmap(context, size_x, size_y, [[0.2 for x in range(size_x)] for y in range(size_y)], heightmap)
+        set_water_heightmap(context, size_x, size_y, [[0.2 for y in range(size_y)] for x in range(size_x)], heightmap)
         
         return {'FINISHED'}
     
@@ -246,21 +268,6 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
     bl_idname = "mesh.erode_terrain"
     bl_label = "Erode Terrain"
     bl_options = {'REGISTER', 'UNDO'}
-    
-
-    
-    # cyclic array
-    class CyclicArray(object):
-        def __init__(self, original_array):
-            self.size_x = len(original_array)
-            self.size_y = len(original_array[0])
-            self.arr = original_array
-        
-        def get(self, x, y):
-            x %= self.size_x 
-            y %= self.size_y
-            return self.arr[x, y]
-
 
     
     @classmethod
@@ -288,9 +295,9 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         is_river = context.scene.Terrain.is_river
         source_height = context.scene.Terrain.source_height
        
-        #water = add_rain(water)
+
         # the main thing
-        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, topsoil_texture = erode(steps, delta_t, erosion_constant, max_penetration_depth, regolith_constant, inertial_erosion_constant, is_river, source_height, size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock)
+        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, topsoil_texture = erode(steps, delta_t, erosion_constant, max_penetration_depth, regolith_constant, inertial_erosion_constant, is_river, source_height, size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, self.velocity_x, self.velocity_y)
 
         bpy.data.images['topsoil_texture'].pixels = topsoil_texture
                         
@@ -313,6 +320,8 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.topsoil = context.active_object["topsoil"]
         self.subsoil = context.active_object["subsoil"]
         self.bedrock = context.active_object["bedrock"]
+        self.velocity_x = context.active_object.children[0]["velocity_x"]
+        self.velocity_y = context.active_object.children[0]["velocity_y"]
         
         
     def save_everything(self):
@@ -325,6 +334,8 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.context.active_object["topsoil"] = self.topsoil 
         self.context.active_object["subsoil"] = self.subsoil
         self.context.active_object["bedrock"] = self.bedrock
+        self.context.active_object.children[0]["velocity_x"] = self.velocity_x
+        self.context.active_object.children[0]["velocity_y"] = self.velocity_y
         
 
 # returns a heightmap from the z coords of vertices... which might not be correct.
@@ -333,7 +344,7 @@ def get_heightmap(context):
     size_x = context.active_object["size_x"]
     size_y = context.active_object["size_y"]
     
-    heightmap = [[0.0 for x in range(size_x)] for y in range(size_y)]
+    heightmap = [[0.0 for y in range(size_y)] for x in range(size_x)]
     for x in range(size_x):
         for y in range(size_y):
             heightmap[x][y] = context.active_object.data.vertices[y + size_y * x].co.z
@@ -347,7 +358,7 @@ def get_water_heightmap(context):
     size_y = context.active_object["size_y"]
 
     heightmap = get_heightmap(context)
-    water_heightmap = [[0.0 for x in range(context.active_object["size_x"])] for y in range(context.active_object["size_y"])]
+    water_heightmap = [[0.0 for y in range(context.active_object["size_y"])] for x in range(context.active_object["size_x"])]
     for x in range(size_x):
         for y in range(size_y):
             water_heightmap[x][y] = context.active_object.children[0].data.vertices[y + size_y * x].co.z - heightmap[x][y]
@@ -370,15 +381,6 @@ def set_heightmap(context, size_x, size_y, heightmap):
     context.active_object["heightdata"] = heightmap
 
 
-def add_rain(water):
-    rain = 0.15
-    
-    for x in range(len(water)):
-        for y in range(len(water[0])):
-            water[x][y] += rain
-    
-    return water
-
 
 # UI
 
@@ -390,37 +392,76 @@ class TERRAIN_PT_Sidebar(bpy.types.Panel):
     
     def draw(self, context):
         layout = self.layout
+
+        box = layout.box()
+        box.label(text="New terrain")
+
+        # Add terrain
+        box.prop(context.scene.Terrain, "scale")
         
-        layout.operator("mesh.add_terrain", text="Add Terrain")
-        layout.operator("mesh.modify_terrain", text="cesta tretej triedy")
+        box.prop(context.scene.Terrain, "size")
+
+        box.operator("mesh.add_terrain", text="Add Terrain")
         
-        layout.prop(context.scene.Terrain, "steps")
-        layout.prop(context.scene.Terrain, "delta_t")
+        # Noise
+        box = layout.box()
+        box.label(text="Noise")
+
+        box.prop(context.scene.Terrain, "sample_scale")
+        box.prop(context.scene.Terrain, "amplitude")
+        box.prop(context.scene.Terrain, "fractal_dimension")
+        box.prop(context.scene.Terrain, "lacunarity")
+        box.prop(context.scene.Terrain, "octaves")
+        box.prop(context.scene.Terrain, "offset")
+        box.prop(context.scene.Terrain, "noise_type")
+
+        box.operator("mesh.modify_terrain", text="cesta tretej triedy")
         
-        #row = self.layout.row()
-        col = layout.column()
+        # Erosion
+        box = layout.box()
+        box.label(text="Erosion")
+
+        box.prop(context.scene.Terrain, "steps")
+        box.prop(context.scene.Terrain, "delta_t")
+        
+        col = box.column()
         col.prop(context.scene.Terrain, "erosion_constant")
         col.prop(context.scene.Terrain, "inertial_erosion_constant")
         col.prop(context.scene.Terrain, "regolith_constant")
         col.prop(context.scene.Terrain, "max_penetration_depth")
 
-        col = layout.column()
+        col = box.column()
         col.prop(context.scene.Terrain, "is_river")
         col.prop(context.scene.Terrain, "source_height")
 
-        layout.operator("mesh.erode_terrain", text="zeroduj")
+        box.operator("mesh.erode_terrain", text="zeroduj")
 
 
 # Property definitions
 class TERRAIN_PG_SceneProperties(bpy.types.PropertyGroup):
-    steps: bpy.props.IntProperty(name="Steps", default=1, min=1)
-    delta_t: bpy.props.FloatProperty(name="delta t", default=0.1, min=0.0000001, max=10)
-    erosion_constant: bpy.props.FloatProperty(name="erosion constant", default=0.25, min=0.0, max=10)
-    inertial_erosion_constant: bpy.props.FloatProperty(name="inertial erosion constant", default=0.25, min=0.0, max=100)
-    regolith_constant: bpy.props.FloatProperty(name="regolith constant", default=0.5, min=0.0, max=10)
-    max_penetration_depth: bpy.props.FloatProperty(name="maximum regolith penetration depth", default=0.01, min=0.0, max=2)
-    is_river: bpy.props.BoolProperty(name="River mode", default=False)
-    source_height: bpy.props.FloatProperty(name="River source height", default=1.0, min=0.0, max=20.0)
+    scale: bpy.props.FloatProperty(name="Scale", default=1.0, min=0.0, description="What resolution the terrain is")
+    size: bpy.props.IntVectorProperty(name="Size", size=2, default=(128, 128), description="Number of cells of the terrain")
+
+    sample_scale: bpy.props.FloatProperty(name="Sample scale", default=25.0, min=0.0, description="Scale of the noise, divided by 1000")
+    amplitude: bpy.props.FloatProperty(name="Amplitude", default=15.0, description="Amplitude of the noise")
+    fractal_dimension: bpy.props.FloatProperty(name="Fractal dimension", default=1.0, min=0.0)
+    lacunarity: bpy.props.FloatProperty(name="Lacunarity", default=3.0, min=0.0)
+    octaves: bpy.props.FloatProperty(name="Octaves", default=3, min=0)
+    offset: bpy.props.FloatProperty(name="Offset", default=1.0)
+
+    # identifier, what user sees, description
+    noise_types_enum = [('BLENDER', 'BLENDER', "" ), ('PERLIN_ORIGINAL', 'PERLIN_ORIGINAL', ""), ('PERLIN_NEW', 'PERLIN_NEW', ""), ('VORONOI_F1', 'VORONOI_F1', ""), ('VORONOI_F2', 'VORONOI_F2', ""), ('VORONOI_F3', 'VORONOI_F3', ""), ('VORONOI_F4', 'VORONOI_F4', ""), ('VORONOI_F2F1', 'VORONOI_F2F1', ""), ('VORONOI_CRACKLE', 'VORONOI_CRACKLE', ""), ('CELLNOISE', 'CELLNOISE', "")]
+
+    noise_type: bpy.props.EnumProperty(name="Noise type", items=noise_types_enum, default='PERLIN_ORIGINAL', description="Type of noise function")
+
+    steps: bpy.props.IntProperty(name="Steps", default=1, min=1, description="Number of iterations to be performed at once")
+    delta_t: bpy.props.FloatProperty(name="delta t", default=0.1, min=0.0000001, max=10, description="Delta time, smaller = slower & finer, bigger = faster & rougher")
+    erosion_constant: bpy.props.FloatProperty(name="erosion constant", default=0.25, min=0.0, max=10, description="Multiplier for the force erosion")
+    inertial_erosion_constant: bpy.props.FloatProperty(name="inertial erosion constant", default=0.25, min=0.0, max=100, description="Multiplier for the inertial erosion")
+    regolith_constant: bpy.props.FloatProperty(name="regolith constant", default=0.5, min=0.0, max=10, description="Multiplier for the regolith erosion")
+    max_penetration_depth: bpy.props.FloatProperty(name="maximum regolith penetration depth", default=0.01, min=0.0, max=2, description="Maximum depth of the regolith layer")
+    is_river: bpy.props.BoolProperty(name="River mode", default=False, description="A water source will spawn on one side of the map, all water will be drained from the other side")
+    source_height: bpy.props.FloatProperty(name="River source height", default=1.0, min=0.0, max=20.0, description="Height of the river water source column")
 
 
 
