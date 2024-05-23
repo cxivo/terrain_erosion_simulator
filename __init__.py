@@ -108,6 +108,7 @@ def add_object(self, context):
     bpy.context.active_object["topsoil"] = [[0.0, 0.0, 0.0, 0.0, 0.0] for y in range(self.size_y) for x in range(self.size_x)]
     bpy.context.active_object["subsoil"] = [[0.0, 0.0, 0.0, 0.0, 0.0] for y in range(self.size_y) for x in range(self.size_x)]
     bpy.context.active_object["bedrock"] = [[1000000.0] for y in range(self.size_y) for x in range(self.size_x)]
+    bpy.context.active_object["wet"] = [[0.0 for y in range(self.size_y)] for x in range(self.size_x)]
     bpy.context.active_object["bedrock_types"] = [0]
 
     
@@ -243,20 +244,21 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
         # try deleting the old one
         is_old_one_good = False
         try:
-            old = bpy.data.images['texture_type']
+            """ old = bpy.data.images['texture_type']
             if old.size[0] == size_x and old.size[1] == size_y:
                 is_old_one_good = True
-            else:
-                bpy.data.images.remove(bpy.data.images['texture_type'])
-                bpy.data.images.remove(bpy.data.images['texture_velocity'])
-                bpy.data.images.remove(bpy.data.images['texture_organic'])
-                bpy.data.images.remove(bpy.data.images['texture_rock0'])
-                bpy.data.images.remove(bpy.data.images['texture_rock1'])
-                bpy.data.images.remove(bpy.data.images['texture_rock2'])
-                bpy.data.images.remove(bpy.data.images['texture_rock3'])
-                bpy.data.images.remove(bpy.data.images['texture_bedrock0'])
-                bpy.data.images.remove(bpy.data.images['texture_bedrock1'])
-                bpy.data.images.remove(bpy.data.images['texture_bedrock2'])
+            else: """
+            bpy.data.images.remove(bpy.data.images['texture_type'])
+            bpy.data.images.remove(bpy.data.images['texture_velocity'])
+            bpy.data.images.remove(bpy.data.images['texture_organic'])
+            bpy.data.images.remove(bpy.data.images['texture_rock0'])
+            bpy.data.images.remove(bpy.data.images['texture_rock1'])
+            bpy.data.images.remove(bpy.data.images['texture_rock2'])
+            bpy.data.images.remove(bpy.data.images['texture_rock3'])
+            bpy.data.images.remove(bpy.data.images['texture_bedrock0'])
+            bpy.data.images.remove(bpy.data.images['texture_bedrock1'])
+            bpy.data.images.remove(bpy.data.images['texture_bedrock2'])
+            bpy.data.images.remove(bpy.data.images['texture_water'])
         except:
             pass
 
@@ -271,6 +273,7 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
             bpy.data.images.new('texture_bedrock0', size_x, size_y)
             bpy.data.images.new('texture_bedrock1', size_x, size_y)
             bpy.data.images.new('texture_bedrock2', size_x, size_y)
+            bpy.data.images.new('texture_water', size_x, size_y)
         
 
         #topsoil_texture = bpy.data.images['topsoil_texture']
@@ -324,7 +327,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
        
 
         # the main thing
-        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, self.bedrock_types, texture_type, texture_velocity, texture_organic, texture_rock, texture_bedrock = erode(steps, delta_t, erosion_constant, max_penetration_depth, inertial_erosion_constant, is_river, source_height, size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, self.bedrock_types, self.velocity_x, self.velocity_y)
+        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, self.bedrock_types, self.wet, texture_type, texture_velocity, texture_organic, texture_rock, texture_bedrock, texture_water = erode(steps, delta_t, erosion_constant, max_penetration_depth, inertial_erosion_constant, is_river, source_height, size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, self.bedrock_types, self.velocity_x, self.velocity_y, self.wet)
 
         bpy.data.images['texture_type'].pixels = texture_type
         bpy.data.images['texture_velocity'].pixels = texture_velocity
@@ -336,6 +339,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         bpy.data.images['texture_bedrock0'].pixels = texture_bedrock[0]
         bpy.data.images['texture_bedrock1'].pixels = texture_bedrock[1]
         bpy.data.images['texture_bedrock2'].pixels = texture_bedrock[2]
+        bpy.data.images['texture_water'].pixels = texture_water
 
                         
         # set terrain and water heights
@@ -357,6 +361,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.topsoil = context.active_object["topsoil"]
         self.subsoil = context.active_object["subsoil"]
         self.bedrock = context.active_object["bedrock"]
+        self.wet = context.active_object["wet"]
         self.bedrock_types = context.active_object["bedrock_types"].to_list()
         self.velocity_x = context.active_object.children[0]["velocity_x"]
         self.velocity_y = context.active_object.children[0]["velocity_y"]
@@ -372,6 +377,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.context.active_object["topsoil"] = self.topsoil 
         self.context.active_object["subsoil"] = self.subsoil
         self.context.active_object["bedrock"] = self.bedrock
+        self.context.active_object["wet"] = self.wet
         self.context.active_object["bedrock_types"] = self.bedrock_types
         self.context.active_object.children[0]["velocity_x"] = self.velocity_x
         self.context.active_object.children[0]["velocity_y"] = self.velocity_y
