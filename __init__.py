@@ -110,6 +110,7 @@ def add_object(self, context):
     bpy.context.active_object["bedrock"] = [[1000000.0] for y in range(self.size_y) for x in range(self.size_x)]
     bpy.context.active_object["wet"] = [[0.0 for y in range(self.size_y)] for x in range(self.size_x)]
     bpy.context.active_object["bedrock_types"] = [0]
+    bpy.context.active_object["vegetation"] = [[0.0 for y in range(self.size_y)] for x in range(self.size_x)]
 
     
     # materials
@@ -259,6 +260,7 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
             bpy.data.images.remove(bpy.data.images['texture_bedrock1'])
             bpy.data.images.remove(bpy.data.images['texture_bedrock2'])
             bpy.data.images.remove(bpy.data.images['texture_water'])
+            bpy.data.images.remove(bpy.data.images['texture_vegetation'])
         except:
             pass
 
@@ -274,6 +276,7 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
             bpy.data.images.new('texture_bedrock1', size_x, size_y)
             bpy.data.images.new('texture_bedrock2', size_x, size_y)
             bpy.data.images.new('texture_water', size_x, size_y)
+            bpy.data.images.new('texture_vegetation', size_x, size_y)
         
 
         #topsoil_texture = bpy.data.images['topsoil_texture']
@@ -321,13 +324,18 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         erosion_constant = context.scene.Terrain.erosion_constant
         inertial_erosion_constant = context.scene.Terrain.inertial_erosion_constant
         max_penetration_depth = context.scene.Terrain.max_penetration_depth
+        downhill_creep_constant = context.scene.Terrain.downhill_creep_constant
+        vegetation_spread_speed = context.scene.Terrain.vegetation_spread_speed
+        vegetation_base = context.scene.Terrain.vegetation_base
+        organification_speed = context.scene.Terrain.organification_speed
+        soilification_speed = context.scene.Terrain.soilification_speed
 
         is_river = context.scene.Terrain.is_river
         source_height = context.scene.Terrain.source_height
        
 
         # the main thing
-        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, self.bedrock_types, self.wet, texture_type, texture_velocity, texture_organic, texture_rock, texture_bedrock, texture_water = erode(steps, delta_t, erosion_constant, max_penetration_depth, inertial_erosion_constant, is_river, source_height, size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, self.bedrock_types, self.velocity_x, self.velocity_y, self.wet)
+        self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, self.bedrock_types, self.wet, self.vegetation, texture_type, texture_velocity, texture_organic, texture_rock, texture_bedrock, texture_water, texture_vegetation = erode(steps, delta_t, erosion_constant, max_penetration_depth, inertial_erosion_constant, downhill_creep_constant, vegetation_spread_speed, vegetation_base, organification_speed, soilification_speed, is_river, source_height, size_x, size_y, self.heightmap, self.water, self.previous_water, self.sediment, self.flow, self.regolith, self.topsoil, self.subsoil, self.bedrock, self.bedrock_types, self.velocity_x, self.velocity_y, self.wet, self.vegetation)
 
         bpy.data.images['texture_type'].pixels = texture_type
         bpy.data.images['texture_velocity'].pixels = texture_velocity
@@ -340,6 +348,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         bpy.data.images['texture_bedrock1'].pixels = texture_bedrock[1]
         bpy.data.images['texture_bedrock2'].pixels = texture_bedrock[2]
         bpy.data.images['texture_water'].pixels = texture_water
+        bpy.data.images['texture_vegetation'].pixels = texture_vegetation
 
                         
         # set terrain and water heights
@@ -362,6 +371,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.subsoil = context.active_object["subsoil"]
         self.bedrock = context.active_object["bedrock"]
         self.wet = context.active_object["wet"]
+        self.vegetation = context.active_object["vegetation"]
         self.bedrock_types = context.active_object["bedrock_types"].to_list()
         self.velocity_x = context.active_object.children[0]["velocity_x"]
         self.velocity_y = context.active_object.children[0]["velocity_y"]
@@ -378,6 +388,7 @@ class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
         self.context.active_object["subsoil"] = self.subsoil
         self.context.active_object["bedrock"] = self.bedrock
         self.context.active_object["wet"] = self.wet
+        self.context.active_object["vegetation"] = self.vegetation
         self.context.active_object["bedrock_types"] = self.bedrock_types
         self.context.active_object.children[0]["velocity_x"] = self.velocity_x
         self.context.active_object.children[0]["velocity_y"] = self.velocity_y
@@ -503,7 +514,7 @@ class TERRAIN_PT_Sidebar(bpy.types.Panel):
         box.prop(context.scene.Terrain, "offset")
         box.prop(context.scene.Terrain, "noise_type")
 
-        box.operator("mesh.modify_terrain", text="cesta tretej triedy")
+        box.operator("mesh.modify_terrain", text="Apply noise")
         
         # Erosion
         box = layout.box()
@@ -517,6 +528,11 @@ class TERRAIN_PT_Sidebar(bpy.types.Panel):
         col.prop(context.scene.Terrain, "inertial_erosion_constant")
         col.prop(context.scene.Terrain, "regolith_constant")
         col.prop(context.scene.Terrain, "max_penetration_depth")
+        col.prop(context.scene.Terrain, "downhill_creep_constant")
+        col.prop(context.scene.Terrain, "vegetation_spread_speed")
+        col.prop(context.scene.Terrain, "vegetation_base")
+        col.prop(context.scene.Terrain, "organification_speed")
+        col.prop(context.scene.Terrain, "soilification_speed")
 
         col = box.column()
         col.prop(context.scene.Terrain, "is_river")
@@ -551,7 +567,14 @@ class TERRAIN_PG_SceneProperties(bpy.types.PropertyGroup):
     delta_t: bpy.props.FloatProperty(name="delta t", default=0.1, min=0.0000001, max=10, description="Delta time, smaller = slower & finer, bigger = faster & rougher")
     erosion_constant: bpy.props.FloatProperty(name="erosion constant", default=0.25, min=0.0, max=10, description="Multiplier for the force erosion")
     inertial_erosion_constant: bpy.props.FloatProperty(name="inertial erosion constant", default=0.25, min=0.0, max=100, description="Multiplier for the inertial erosion")
+    downhill_creep_constant: bpy.props.FloatProperty(name="downhill creep constant", default=0.01, min=0.0, max=10.0, description="How quickly the  downhill creep should act")
+    vegetation_spread_speed: bpy.props.FloatProperty(name="vegetation spread speed", default=1, min=0.0, max=10.0, description="How quickly should the vegetation change")
+    vegetation_base: bpy.props.FloatProperty(name="vegetation base", default=0.20, min=0.0, max=2.0, description="How sensitive is vegetation to soil content")
+    organification_speed: bpy.props.FloatProperty(name="rock breakdown speed", default=0.1, min=0.0, max=100.0, description="How quickly vegetation breaks down rocks")
+    soilification_speed: bpy.props.FloatProperty(name="bedrock to organic conversion", default=0.1, min=0.0, max=100.0, description="How quickly vegetation breaks down bedrock into smaller rocks")
+
     max_penetration_depth: bpy.props.FloatProperty(name="maximum regolith penetration depth", default=0.01, min=0.0, max=2, description="Maximum depth of the regolith layer")
+
     is_river: bpy.props.BoolProperty(name="River mode", default=False, description="A water source will spawn on one side of the map, all water will be drained from the other side")
     source_height: bpy.props.FloatProperty(name="River source height", default=1.0, min=0.0, max=20.0, description="Height of the river water source column")
 

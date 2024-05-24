@@ -14,6 +14,57 @@ cdef extern from "stdlib.h":
     int RAND_MAX
 cdef double BETTER_RAND_MAX = RAND_MAX
 
+
+##################################################
+# SOILS AND ROCKS
+
+cdef struct Soil:
+    double organic  # height of organic matter in soil, meters
+    # 0 - sand
+    # 1 - gravel
+    # 2 - rocks
+    # 3 - boulders
+    double[4] rocks  # heights of various coarsenesses of materials, meters
+
+
+cdef struct Bedrock:
+    double height
+    int type
+
+
+# "terrain horizon" is the name of the fact that various soils and rocks are ordered in layers
+cdef struct Horizon:
+    Soil topsoil
+    Soil subsoil
+    vector[Bedrock] bedrock
+
+
+cdef struct Water:
+    double height
+    double previous
+    Soil regolith
+    Soil sediment;
+    double velocity_x
+    double velocity_y
+
+
+##################################################
+# GEOLOGY CONSTANTS
+
+cdef Soil EMPTY_SOIL
+EMPTY_SOIL.organic = 0.0
+for i in range(4):
+    EMPTY_SOIL.rocks[i] = 0.0
+
+cdef Water EMPTY_WATER
+EMPTY_WATER.height = 0.0
+EMPTY_WATER.previous = 0.0
+EMPTY_WATER.regolith = EMPTY_SOIL
+EMPTY_WATER.sediment = EMPTY_SOIL
+EMPTY_WATER.velocity_x = 0.0
+EMPTY_WATER.velocity_y = 0.0
+
+
 cdef int ORGANIC = 4  # just the id in arrays
 cdef double infinity = float("inf")
 
@@ -50,6 +101,29 @@ cdef double[3][4] bedrock_erodability_constant = [[0.0, -0.25, -0.4, -0.5],  # s
                                                 [0.0, -0.5, 0.0, 0.0]]  # granite (or something)
 
 cdef double[3] bedrock_taluses = [4.0, 10000000.0, 10000000.0]
+
+cdef double critical_slope = 1.40
+cdef double MAX_CREEP_DENOMINATOR = 0.1
+
+cdef double ORGANIC_VEGETATION_MULIPLITER = 1.5
+cdef double[4] ROCK_VEGETATION_MULIPLITER = [0.2, 0, 0, 0]
+cdef double NEIGHBOR_VEGETATION_MULTIPLIER = 0.25
+cdef double[4] ROCK_CONVERSION_RATE= [1, 0.2, 0.3, 0.4]
+
+cdef double[3] BEDROCK_CONVERSION_RATE= [1, 0.3, 0]
+
+
+cdef inline Soil new_soil(double organic, double rock0, double rock1, double rock2, double rock3) noexcept nogil:
+    cdef Soil soil
+    soil.organic = organic
+    soil.rocks[0] = rock0
+    soil.rocks[1] = rock1
+    soil.rocks[2] = rock2
+    soil.rocks[3] = rock3
+    return soil
+
+
+cdef Soil[3] BEDROCK_CONVERT_TO = [new_soil(0.2, 0.0, 0.0, 0.1, 0.7), new_soil(0.2, 0.0, 0.0, 0.0, 0.8), EMPTY_SOIL]
 
 
 ##################################################
@@ -135,65 +209,7 @@ cdef inline double max_erosion_depth(double depth) noexcept nogil:
 
 
 ##################################################
-# SOILS AND ROCKS
-
-cdef struct Soil:
-    double organic  # height of organic matter in soil, meters
-    # 0 - sand
-    # 1 - gravel
-    # 2 - rocks
-    # 3 - boulders
-    double[4] rocks  # heights of various coarsenesses of materials, meters
-
-
-cdef struct Bedrock:
-    double height
-    int type
-
-
-# "terrain horizon" is the name of the fact that various soils and rocks are ordered in layers
-cdef struct Horizon:
-    Soil topsoil
-    Soil subsoil
-    vector[Bedrock] bedrock
-
-
-cdef struct Water:
-    double height
-    double previous
-    Soil regolith
-    Soil sediment;
-    double velocity_x
-    double velocity_y
-
-##################################################
-# GEOLOGY CONSTANTS
-
-cdef Soil EMPTY_SOIL
-EMPTY_SOIL.organic = 0.0
-for i in range(4):
-    EMPTY_SOIL.rocks[i] = 0.0
-
-cdef Water EMPTY_WATER
-EMPTY_WATER.height = 0.0
-EMPTY_WATER.previous = 0.0
-EMPTY_WATER.regolith = EMPTY_SOIL
-EMPTY_WATER.sediment = EMPTY_SOIL
-EMPTY_WATER.velocity_x = 0.0
-EMPTY_WATER.velocity_y = 0.0
-
-
-##################################################
 # HELPER FUNCTIONS
-
-cdef inline Soil new_soil(double organic, double rock0, double rock1, double rock2, double rock3) noexcept nogil:
-    cdef Soil soil
-    soil.organic = organic
-    soil.rocks[0] = rock0
-    soil.rocks[1] = rock1
-    soil.rocks[2] = rock2
-    soil.rocks[3] = rock3
-    return soil
 
 
 cdef inline Soil new_soil_rock(double rock, int index) noexcept nogil:
@@ -233,6 +249,26 @@ cdef inline Soil normalized(Soil soil) noexcept nogil:
         soil.rocks[i] /= soil_height
     
     return soil
+
+
+# returns soil with average concentrations of all materials in a depth-deep column
+cdef inline Soil get_soil_sample(Horizon& horizon, double depth) noexcept nogil:
+    cdef Soil result = horizon.topsoil
+
+    if get_soil_height(result) >= depth:
+        # we have everything
+        return soil_fraction(result, depth / get_soil_height(result))
+
+    depth -= get_soil_height(result)
+
+    if get_soil_height(horizon.subsoil) <= 0.0:
+        return result
+
+    cdef double fraction = min(1.0, depth / get_soil_height(horizon.subsoil))
+
+    add_to_soil(result, soil_fraction(horizon.subsoil, fraction))
+
+    return result
 
 
 # returns Soil with same ratios, but scaled by fraction
@@ -294,14 +330,29 @@ cdef double get_soil_talus(Soil soil) noexcept nogil:
     if get_soil_height(soil) <= 0.0:
         return infinity
 
-    cdef double talus = 1.4 * soil.organic
+    cdef double talus = 1.25 * soil.organic
     talus += 0.7 * soil.rocks[0]
     talus += 0.8 * soil.rocks[1]
     talus += 1.0 * soil.rocks[2]
-    talus += 1.3 * soil.rocks[3]
+    talus += 1.0 * soil.rocks[3]
 
     return talus
 
+
+cdef inline Soil organification(Soil soil, double vegetation, double organification_speed, double delta_t) noexcept nogil:
+    cdef double change_0_org = min(delta_t * vegetation * 0.01 * organification_speed * ROCK_CONVERSION_RATE[0], soil.rocks[0])
+    cdef double change_1_0 = min(delta_t * vegetation * 0.01 * organification_speed * ROCK_CONVERSION_RATE[1], soil.rocks[1])
+    cdef double change_2_1 = min(delta_t * vegetation * 0.01 * organification_speed * ROCK_CONVERSION_RATE[2], soil.rocks[2])
+    cdef double change_3_2 = min(delta_t * vegetation * 0.01 * organification_speed * ROCK_CONVERSION_RATE[3], soil.rocks[3])
+
+    cdef Soil result = EMPTY_SOIL
+    result.organic = soil.organic + change_0_org
+    result.rocks[0] = soil.rocks[0] + change_1_0 - change_0_org
+    result.rocks[1] = soil.rocks[1] + change_2_1 - change_1_0
+    result.rocks[2] = soil.rocks[2] + change_3_2 - change_2_1
+    result.rocks[3] = soil.rocks[3] - change_3_2
+
+    return result
 
 ##################################################
 # WATER
@@ -545,10 +596,260 @@ cdef double erode_rocks_amount_only_from(Soil& soil, double requested_amount, in
     return amount_remove
 
 
+# this function exists because it some-fricking-how interfered with Gravitational erosion and I couldn't find a fix
+# MODIFIES ARGUMENTS
+cdef void gravitational_erosion(int size_x, int size_y, double delta_t, double downhill_creep_constant, vector[vector[Horizon]]& terrain, double[:, :]& heightmap, double[:, :]& vegetation) noexcept nogil:
+    cdef vector[vector[vector[vector[Soil]]]] soil_flow
+    cdef vector[vector[double]] heightmap2
+    cdef int x, y, si, sj, i, index
+    cdef double fraction, total_quantity, slope, denominator, q, to_distribute, height_fraction, part, delta_h_sum
+    cdef Soil soil
+    cdef double[3][3] neighbors_delta_height
+
+    heightmap2.resize(size_x)
+    soil_flow.resize(size_x)
+
+    for x in range(size_x):
+        heightmap2.at(x).resize(size_y, 0.0)
+        soil_flow.at(x).resize(size_y)
+        for y in range(size_y):
+            soil_flow[x][y].resize(3)
+            for si in range(3):
+                soil_flow[x][y][si].resize(3, EMPTY_SOIL)
+
+
+    for x in range(size_x):
+        for y in range(size_y):
+            # clear flows
+            heightmap2[x][y] = 0.0
+            for si in range(-1, 2):
+                for sj in range(-1, 2):
+                    soil_flow[x][y][si + 1][sj + 1] = EMPTY_SOIL
+
+            # talus angle will be the smaller of the 2 soils
+            talus = get_soil_talus(terrain[x][y].topsoil)
+            if get_soil_talus(terrain[x][y].subsoil) * 1.25 < talus:
+                talus = get_soil_talus(terrain[x][y].subsoil) * 1.25
+
+
+
+            # which neighbors will get a piece of our terrain
+            soil = terrain[x][y].topsoil
+            for i in range(2):
+
+                delta_h_sum = 0.0
+                max_delta = 0.0
+
+                if get_soil_height(soil) > 0.0:
+                    neighbors_delta_height = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]] 
+                    for si in range(-1, 2):
+                        for sj in range(-1, 2):
+                            if si != 0 or sj != 0:
+                                delta = heightmap[x][y] - heightmap[mod(x + si, size_x)][mod(y + sj, size_y)]
+
+                                # if should erode
+                                if delta / (length * sqrt(si**2 + sj**2)) >= talus:
+                                    # largest difference
+                                    if delta > max_delta:
+                                        max_delta = delta
+
+                                    # save for later reference
+                                    neighbors_delta_height[si + 1][sj + 1] = delta
+                                    delta_h_sum += delta
+                                    
+                    
+                    to_distribute = min(0.5 * max_delta * random(0.9, 1.0), get_soil_height(soil))
+
+                    height_fraction = to_distribute / get_soil_height(soil)
+
+                    # how much will flow OUT of this cell later
+                    # misusing this array
+                    heightmap2[x][y] = to_distribute
+
+                    # assign flows
+                    if delta_h_sum > 0:
+                        for si in range(-1, 2):
+                            for sj in range(-1, 2):
+                                if si != 0 or sj != 0:
+                                    fraction = height_fraction * neighbors_delta_height[si + 1][sj + 1] / delta_h_sum
+                                    soil_flow[x][y][si + 1][sj + 1] = soil_fraction(soil, fraction)
+                    
+                    # erode only the topsoil
+                    break
+                else:
+                    soil = terrain[x][y].subsoil
+
+
+            # BEDROCK only if there is nothing above us
+            if get_soil_height(terrain[x][y].topsoil) + get_soil_height(terrain[x][y].subsoil) <= 0.0:
+                talus = infinity
+                for i in range(terrain[x][y].bedrock.size()):
+                    if bedrock_taluses[terrain[x][y].bedrock[i].type] < talus and terrain[x][y].bedrock[i].height > 0.0:
+                        talus = bedrock_taluses[terrain[x][y].bedrock[i].type]
+                
+                delta_h_sum = 0.0
+                max_delta = 0.0
+
+                # first nonempty
+                index = 0
+                while terrain[x][y].bedrock[index].height <= 0.0:
+                    index += 1
+
+            
+                neighbors_delta_height = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]] 
+                for si in range(-1, 2):
+                    for sj in range(-1, 2):
+                        if si != 0 or sj != 0:
+                            delta = heightmap[x][y] - heightmap[mod(x + si, size_x)][mod(y + sj, size_y)]
+
+                            # if should erode
+                            if delta / (length * sqrt(si**2 + sj**2)) >= talus:
+                                # largest difference
+                                if delta > max_delta:
+                                    max_delta = delta
+
+                                # save for later reference
+                                neighbors_delta_height[si + 1][sj + 1] = delta
+                                delta_h_sum += delta
+                                
+                
+                to_distribute = min(0.5 * max_delta * random(0.9, 1.0), terrain[x][y].bedrock[index].height)
+
+                # how much will flow OUT of this cell later
+                # misusing this array
+                heightmap2[x][y] = to_distribute
+
+                # assign flows
+                if delta_h_sum > 0:
+                    for si in range(-1, 2):
+                        for sj in range(-1, 2):
+                            if si != 0 or sj != 0:
+                                part = to_distribute * neighbors_delta_height[si + 1][sj + 1] / delta_h_sum
+                                soil_flow[x][y][si + 1][sj + 1] = new_soil_from_bedrock_type(index, part)
+
+
+    # assign flows
+    for x in range(size_x):
+        for y in range(size_y):
+            # remove soil from this column
+            remove_soil(terrain[x][y], heightmap2[x][y])
+            heightmap[x][y] -= heightmap2[x][y]
+
+            # kills vegetation
+            if heightmap2[x][y] > 0.0:
+                vegetation[x][y] = 0.0
+
+            # deposit soil from neighbors
+            for si in range(-1, 2):
+                for sj in range(-1, 2):
+                    if si != 0 or sj != 0:
+                        deposit_soil(terrain[x][y], soil_flow[mod(x + si, size_x)][mod(y + sj, size_y)][1 - si][1 - sj])
+                        soil_height = get_soil_height(soil_flow[mod(x + si, size_x)][mod(y + sj, size_y)][1 - si][1 - sj])
+                        heightmap[x][y] += soil_height
+
+                        # kills vegetation
+                        if soil_height > 0.0:
+                            vegetation[x][y] = 0.0
+
+
+# this function exists because it some-fricking-how interfered with Gravitational erosion and I couldn't find a fix
+# MODIFIES ARGUMENTS
+cdef void downhill_creep(int size_x, int size_y, double delta_t, double downhill_creep_constant, vector[vector[Horizon]]& terrain, double[:, :]& heightmap) noexcept nogil:
+    cdef vector[vector[vector[vector[Soil]]]] soil_flow
+    cdef vector[vector[double]] heightmap2
+    cdef int x, y, si, sj
+    cdef double fraction, total_quantity, slope, denominator, q, to_distribute, height_fraction
+    cdef Soil soil
+    cdef double[3][3] neighbors_quantity
+
+    heightmap2.resize(size_x)
+    soil_flow.resize(size_x)
+
+    for x in range(size_x):
+        heightmap2.at(x).resize(size_y, 0.0)
+        soil_flow.at(x).resize(size_y)
+        for y in range(size_y):
+            soil_flow[x][y].resize(3)
+            for si in range(3):
+                soil_flow[x][y][si].resize(3, EMPTY_SOIL)
+
+
+    for x in range(size_x):
+        for y in range(size_y):
+            # clear flows
+            heightmap2[x][y] = 0.0
+            for si in range(-1, 2):
+                for sj in range(-1, 2):
+                    soil_flow[x][y][si + 1][sj + 1] = EMPTY_SOIL
+
+            # which neighbors will get a piece of our terrain
+            soil = terrain[x][y].topsoil
+            for i in range(2):
+                
+                total_quantity = 0.0
+
+                if get_soil_height(soil) > 0.0:
+                    neighbors_quantity = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]] 
+                    for si in range(-1, 2):
+                        for sj in range(-1, 2):
+                            if si != 0 or sj != 0:
+                                slope = heightmap[x][y] - heightmap[mod(x + si, size_x)][mod(y + sj, size_y)]
+                                if slope > 0.0: 
+                                    if si != 0 and sj != 0:
+                                        slope /= sqrt(2) * length
+                                    else:
+                                        slope /= length
+
+                                    denominator = 1 - (slope / critical_slope)**2
+
+                                    # if it's less than 0 it's too steep, should've gotten eroded by gravitational erosion anyway
+                                    denominator = max(denominator, MAX_CREEP_DENOMINATOR)
+
+                                    q = downhill_creep_constant * slope / denominator
+
+                                    # save for later reference
+                                    neighbors_quantity[si + 1][sj + 1] = q
+                                    total_quantity += q
+                                
+                    to_distribute = min(delta_t * 0.5 * total_quantity * soil.organic / get_soil_height(soil), get_soil_height(soil))
+
+                    height_fraction = to_distribute / get_soil_height(soil)
+
+                    # how much will flow OUT of this cell later
+                    # misusing this array
+                    heightmap2[x][y] = to_distribute
+
+                    # assign flows
+                    if to_distribute > 0:
+                        for si in range(-1, 2):
+                            for sj in range(-1, 2):
+                                if si != 0 or sj != 0:
+                                    fraction = height_fraction * neighbors_quantity[si + 1][sj + 1] / total_quantity
+                                    soil_flow[x][y][si + 1][sj + 1] = soil_fraction(soil, fraction)
+                    
+                    # erode only the topsoil
+                    break
+                else:
+                    soil = terrain[x][y].subsoil
+
+    # assign flows
+    for x in range(size_x):
+        for y in range(size_y):
+            # remove soil from this column
+            remove_soil(terrain[x][y], heightmap2[x][y])
+            heightmap[x][y] -= heightmap2[x][y]
+
+            # deposit soil from neighbors
+            for si in range(-1, 2):
+                for sj in range(-1, 2):
+                    if si != 0 or sj != 0:
+                        deposit_soil(terrain[x][y], soil_flow[mod(x + si, size_x)][mod(y + sj, size_y)][1 - si][1 - sj])
+                        heightmap[x][y] += get_soil_height(soil_flow[mod(x + si, size_x)][mod(y + sj, size_y)][1 - si][1 - sj])
+
 
 ##################################################
 ##################################################
-cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double max_penetration_depth, double inertial_erosion_constant, bint is_river, double source_height, unsigned int size_x, unsigned int size_y, list _heightmap, list _water, list _previous_water, list _sediment, list _flow, list _regolith, list _topsoil, list _subsoil, list _bedrock, list _bedrock_types, list _velocity_x, list _velocity_y, list _wet):
+cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double max_penetration_depth, double inertial_erosion_constant, double downhill_creep_constant, double vegetation_spread_speed, double vegetation_base, double organification_speed, double soilification_speed, bint is_river, double source_height, unsigned int size_x, unsigned int size_y, list _heightmap, list _water, list _previous_water, list _sediment, list _flow, list _regolith, list _topsoil, list _subsoil, list _bedrock, list _bedrock_types, list _velocity_x, list _velocity_y, list _wet, list _vegetation):
     # our universal iterators
     cdef unsigned int i, j, x, y
     cdef int si, sj
@@ -562,6 +863,7 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
     cdef cnp.ndarray[cnp.float64_t, ndim=3] __flow = np.array(_flow, dtype=np.float64)
     cdef double[:, :, :] flow = __flow
     cdef double[:, ::1] wet = np.array(_wet, dtype=np.float64)
+    cdef double[:, ::1] vegetation = np.array(_vegetation, dtype=np.float64)
 
 
     cdef unsigned int step = 0
@@ -578,6 +880,7 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
     cdef vector[vector[vector[Water]]] water_flow
     cdef vector[vector[vector[vector[Soil]]]] soil_flow
     cdef vector[vector[double]] heightmap2
+    cdef vector[vector[double]] vegetation2
     """ cdef double[4] acceleration = [0.0, 0.0, 0.0, 0.0]
     cdef double delta_height
     cdef double scaling
@@ -585,8 +888,8 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
     cdef double local_shape_factor
     cdef double sediment_capacity
     cdef double out_volume_sum
-    cdef double[3][3] neighbors_delta_height
-    cdef Soil soil """
+    cdef double[3][3] neighbors_delta_height"""
+    cdef Soil soil 
 
     print("starting erosion...") 
 
@@ -597,6 +900,7 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
     soil_flow.resize(size_x)
     water_flow.resize(size_x)
     heightmap2.resize(size_x)
+    vegetation2.resize(size_x)
 
     for x in range(size_x):
         water.at(x).resize(size_y, EMPTY_WATER)
@@ -605,6 +909,7 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
         water_flow.at(x).resize(size_y)
         terrain.at(x).resize(size_y)
         heightmap2.at(x).resize(size_y, 0.0)
+        vegetation2.at(x).resize(size_y, 0.0)
         for y in range(size_y):
             # water 
             water[x][y].height = _water[x][y]
@@ -663,152 +968,19 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
             for x in prange(size_x, nogil=True, schedule='dynamic', chunksize=1):
                 for y in range(15 * size_y / 16, size_y):
                     water[x][y] = EMPTY_WATER
-   
-        ######################################################
-        # WETNESS
-        ######################################################
 
-        for x in range(size_x):
-            for y in range(size_y):
-                if water[x][y].height > 0.0:
-                    wet[x][y] += delta_t * water[x][y].height
-                else:
-                    wet[x][y] *= 0.5**delta_t 
-
-        ######################################################
-        # GRAVITATIONAL EROSION
-        ######################################################
-
-        for x in range(size_x):
-            for y in range(size_y):
-                # clear flows
-                heightmap2[x][y] = 0.0
-                for si in range(-1, 2):
-                    for sj in range(-1, 2):
-                        soil_flow[x][y][si + 1][sj + 1] = EMPTY_SOIL
-
-                # talus angle will be the smaller of the 2 soils
-                talus = get_soil_talus(terrain[x][y].topsoil)
-                if get_soil_talus(terrain[x][y].subsoil) * 1.25 < talus:
-                    talus = get_soil_talus(terrain[x][y].subsoil) * 1.25
-
-
-
-                # which neighbors will get a piece of our terrain
-                for soil in [terrain[x][y].topsoil, terrain[x][y].subsoil]:
-                    
-                    delta_h_sum = 0.0
-                    max_delta = 0.0
-
-                    if get_soil_height(soil) > 0.0:
-                        neighbors_delta_height = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]] 
-                        for si in range(-1, 2):
-                            for sj in range(-1, 2):
-                                if si != 0 or sj != 0:
-                                    delta = heightmap[x][y] - heightmap[mod(x + si, size_x)][mod(y + sj, size_y)]
-
-                                    # if should erode
-                                    if delta / (length * sqrt(si**2 + sj**2)) >= talus:
-                                        # largest difference
-                                        if delta > max_delta:
-                                            max_delta = delta
-
-                                        # save for later reference
-                                        neighbors_delta_height[si + 1][sj + 1] = delta
-                                        delta_h_sum += delta
-                                        
-                        
-                        to_distribute = min(0.5 * max_delta * random(0.9, 1.0), get_soil_height(soil))
-    
-                        height_fraction = to_distribute / get_soil_height(soil)
-
-                        # how much will flow OUT of this cell later
-                        # misusing this array
-                        heightmap2[x][y] = to_distribute
-
-                        # assign flows
-                        if delta_h_sum > 0:
-                            for si in range(-1, 2):
-                                for sj in range(-1, 2):
-                                    if si != 0 or sj != 0:
-                                        fraction = height_fraction * neighbors_delta_height[si + 1][sj + 1] / delta_h_sum
-                                        soil_flow[x][y][si + 1][sj + 1] = soil_fraction(soil, fraction)
-                        
-                        # erode only the topsoil
-                        break
-                    #else:
-                        # if the topsoil is empty, try the subsoil
-                        # make lower layer more tough
-                        #multiplier *= 1.25
-
-
-                # BEDROCK only if there is nothing above us
-                if get_soil_height(terrain[x][y].topsoil) + get_soil_height(terrain[x][y].subsoil) <= 0.0:
-                    talus = infinity
-                    for i in range(terrain[x][y].bedrock.size()):
-                        if bedrock_taluses[terrain[x][y].bedrock[i].type] < talus and terrain[x][y].bedrock[i].height > 0.0:
-                            talus = bedrock_taluses[terrain[x][y].bedrock[i].type]
-                    
-                    delta_h_sum = 0.0
-                    max_delta = 0.0
-
-                    # first nonempty
-                    index = 0
-                    while terrain[x][y].bedrock[index].height <= 0.0:
-                        index += 1
-
-                
-                    neighbors_delta_height = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]] 
-                    for si in range(-1, 2):
-                        for sj in range(-1, 2):
-                            if si != 0 or sj != 0:
-                                delta = heightmap[x][y] - heightmap[mod(x + si, size_x)][mod(y + sj, size_y)]
-
-                                # if should erode
-                                if delta / (length * sqrt(si**2 + sj**2)) >= talus:
-                                    # largest difference
-                                    if delta > max_delta:
-                                        max_delta = delta
-
-                                    # save for later reference
-                                    neighbors_delta_height[si + 1][sj + 1] = delta
-                                    delta_h_sum += delta
-                                    
-                    
-                    to_distribute = min(0.5 * max_delta * random(0.9, 1.0), terrain[x][y].bedrock[index].height)
-
-                    # how much will flow OUT of this cell later
-                    # misusing this array
-                    heightmap2[x][y] = to_distribute
-
-                    # assign flows
-                    if delta_h_sum > 0:
-                        for si in range(-1, 2):
-                            for sj in range(-1, 2):
-                                if si != 0 or sj != 0:
-                                    part = to_distribute * neighbors_delta_height[si + 1][sj + 1] / delta_h_sum
-                                    soil_flow[x][y][si + 1][sj + 1] = new_soil_from_bedrock_type(index, part)
-
-
-        # assign flows
-        for x in range(size_x):
-            for y in range(size_y):
-                # remove soil from this column
-                remove_soil(terrain[x][y], heightmap2[x][y])
-                heightmap[x][y] -= heightmap2[x][y]
-
-                # deposit soil from neighbors
-                for si in range(-1, 2):
-                    for sj in range(-1, 2):
-                        if si != 0 or sj != 0:
-                            deposit_soil(terrain[x][y], soil_flow[mod(x + si, size_x)][mod(y + sj, size_y)][1 - si][1 - sj])
-                            heightmap[x][y] += get_soil_height(soil_flow[mod(x + si, size_x)][mod(y + sj, size_y)][1 - si][1 - sj])
 
         ######################################################
         # DOWNHILL CREEP
         ######################################################
 
-        
+        downhill_creep(size_x, size_y, delta_t, downhill_creep_constant, terrain, heightmap)
+
+        ######################################################
+        # GRAVITATIONAL EROSION
+        ######################################################
+
+        gravitational_erosion(size_x, size_y, delta_t, downhill_creep_constant, terrain, heightmap, vegetation)
 
         ######################################################
         # MOVE WATER
@@ -1089,6 +1261,97 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
             for y in range(size_y):
                 water[x][y] = water2[x][y]
 
+           
+        ######################################################
+        # WETNESS
+        ######################################################
+
+        for x in range(size_x):
+            for y in range(size_y):
+                if water[x][y].height > 0.0:
+                    wet[x][y] += delta_t * water[x][y].height
+                else:
+                    wet[x][y] *= 0.5**delta_t 
+
+        ######################################################
+        # VEGETATION
+        ######################################################
+
+        for x in range(size_x):
+            for y in range(size_y):
+                # dying
+                if wet[x][y] > 1.0:
+                    # death from floods
+                    vegetation[x][y] = 0.0
+                elif terrain[x][y].topsoil.organic + terrain[x][y].subsoil.organic == 0.0:
+                    # death from no soil
+                    vegetation[x][y] = 0.0
+                else:
+                # growing
+                    #if vegetation[x][y] == 0.0:
+
+                    # count neighbors
+                    neighbor_vegetation = 0.0
+                    for si in range(-1, 2):
+                        for sj in range(-1, 2):
+                            neighbor_vegetation += vegetation[mod(x + si, size_x)][mod(y + sj, size_y)]
+
+                    # soil conditions
+                    average_soil_shallow = get_soil_sample(terrain[x][y], 0.25)
+                    average_soil_deep = get_soil_sample(terrain[x][y], 2.0)
+
+                    # set to 1 if greater than 1
+                    if get_soil_height(average_soil_shallow) > 1:
+                        average_soil_shallow = normalized(average_soil_shallow)
+
+                    if get_soil_height(average_soil_deep) > 1:
+                        average_soil_deep = normalized(average_soil_deep)
+
+                    rocks_shallow = 0.0
+                    for i in range(4):
+                        rocks_shallow += ROCK_VEGETATION_MULIPLITER[i] * average_soil_shallow.rocks[i]
+                        
+                    rocks_deep = 0.0
+                    for i in range(4):
+                        rocks_deep += ROCK_VEGETATION_MULIPLITER[i] * average_soil_deep.rocks[i]
+
+                    # how good the soil is for the plants
+                    soil_conditions = (1 - vegetation[x][y]) * (ORGANIC_VEGETATION_MULIPLITER * average_soil_shallow.organic + rocks_shallow) + vegetation[x][y] * (ORGANIC_VEGETATION_MULIPLITER * average_soil_deep.organic + rocks_deep) - vegetation_base
+
+                    vegetation2[x][y] = min(max(0.0, vegetation[x][y] + random(0, 1) * delta_t * vegetation_spread_speed * (soil_conditions - 0.8 * vegetation[x][y]) * (1 + NEIGHBOR_VEGETATION_MULTIPLIER * neighbor_vegetation)), 1.0)
+
+        for x in range(size_x):
+            for y in range(size_y):
+                vegetation[x][y] = vegetation2[x][y]
+
+        ######################################################
+        # ROCK CONVERSION
+        ######################################################
+
+
+        for x in range(size_x):
+            for y in range(size_y):
+                if vegetation[x][y] > 0.0:
+                    # change soil rocks into organic or break them down
+                    terrain[x][y].topsoil = organification(terrain[x][y].topsoil, vegetation[x][y], organification_speed, delta_t)
+                    terrain[x][y].subsoil = organification(terrain[x][y].subsoil, vegetation[x][y], organification_speed, delta_t)
+
+                    # change bedrock into soil
+                    bedrock_depth = get_soil_height(terrain[x][y].topsoil) + get_soil_height(terrain[x][y].subsoil)
+                    if bedrock_depth <= 4.0:
+                        # first nonempty
+                        index = 0
+                        while terrain[x][y].bedrock[index].height <= 0.0:
+                            index += 1
+
+                        amount = min(delta_t * vegetation[x][y] * 0.01 * soilification_speed * BEDROCK_CONVERSION_RATE[terrain[x][y].bedrock[index].type], terrain[x][y].bedrock[index].height)
+                        soil = soil_fraction(BEDROCK_CONVERT_TO[terrain[x][y].bedrock[index].type], amount)
+                        
+                        # transfer soil
+                        terrain[x][y].bedrock[index].height -= amount
+                        add_to_soil(terrain[x][y].subsoil, soil)
+                    
+                    
 
     print("done")
 
@@ -1132,7 +1395,6 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
     cdef double[:] texture_rock1 = np.zeros(shape=(4 * size_x * size_y))
     cdef double[:] texture_rock2 = np.zeros(shape=(4 * size_x * size_y))
     cdef double[:] texture_rock3 = np.zeros(shape=(4 * size_x * size_y))
-    #cdef double[:] texture_bedrock = np.zeros(shape=(4 * size_x * size_y))
     cdef double[:] texture_bedrock0 = np.zeros(shape=(4 * size_x * size_y))
     cdef double[:] texture_bedrock1 = np.zeros(shape=(4 * size_x * size_y))
     cdef double[:] texture_bedrock2 = np.zeros(shape=(4 * size_x * size_y))
@@ -1155,12 +1417,9 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
             texture_velocity[4 * (x + size_x * y) + 3] = 1.0  # Alpha channel
 
             # topsoil texture
-            if get_soil_height(terrain[x][y].topsoil) > 0.0:
-                texture_type[4 * (x + size_x * y) + 1] = 1.0
-                texture_type[4 * (x + size_x * y) + 3] = 1.0  # Alpha channel
-            if get_soil_height(terrain[x][y].subsoil) > 0.0:
-                texture_type[4 * (x + size_x * y) + 0] = 1.0
-                texture_type[4 * (x + size_x * y) + 3] = 1.0  # Alpha channel
+            texture_type[4 * (x + size_x * y) + 1] = min(1.0, get_soil_height(terrain[x][y].topsoil))
+            texture_type[4 * (x + size_x * y) + 0] = min(1.0, get_soil_height(terrain[x][y].subsoil))
+            texture_type[4 * (x + size_x * y) + 3] = 1.0  # Alpha channel
 
                 #for i in range(4):
                 #    topsoil_texture[4 * (x + size_x * y) + i] = color_topsoil[i]
@@ -1186,9 +1445,12 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
             if height > 0.0 and multiplier > 0.0:
                 render_soil.organic += terrain[x][y].subsoil.organic / height
                 for i in range(4):
-                    render_soil.rocks[i] += terrain[x][y].subsoil.rocks[i] / height
+                    render_soil.rocks[i] += multiplier * terrain[x][y].subsoil.rocks[i] / height
                 # how transparent
                 multiplier *= max(0.0, 1 - (height / LAYER_HEIGHT_TO_BECOME_ERODETHROUGH))
+
+            render_soil = normalized(render_soil)
+            render_soil = soil_fraction(render_soil, 1 - multiplier)
 
             # write to textures
             texture_organic[4 * (x + size_x * y)] = render_soil.organic
@@ -1250,6 +1512,14 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
             texture_bedrock2[4 * (x + size_x * y) + 3] = 1.0  # transparency
 
 
+            # vegetation
+            texture_vegetation[4 * (x + size_x * y)] = vegetation[x][y]
+            texture_vegetation[4 * (x + size_x * y) + 1] = vegetation[x][y]
+            texture_vegetation[4 * (x + size_x * y) + 2] = vegetation[x][y]
+            texture_vegetation[4 * (x + size_x * y) + 3] = 1.0
+        
+
+
     # create Python lists
     _topsoil = [[terrain[x][y].topsoil.rocks[0], 
                   terrain[x][y].topsoil.rocks[1],
@@ -1287,10 +1557,12 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
     _subsoil, 
     _bedrock, 
     _bedrock_types, 
-    np.array(wet).tolist(), 
+    np.array(wet).tolist(),
+    np.array(vegetation).tolist(), 
     np.array(texture_type).tolist(), 
     np.array(texture_velocity).tolist(), 
     np.array(texture_organic).tolist(), 
     (np.array(texture_rock0).tolist(), np.array(texture_rock1).tolist(), np.array(texture_rock2).tolist(), np.array(texture_rock3).tolist()), 
     (np.array(texture_bedrock0).tolist(), np.array(texture_bedrock1).tolist(), np.array(texture_bedrock2).tolist()),
-    np.array(texture_water).tolist()) 
+    np.array(texture_water).tolist(),
+    np.array(texture_vegetation).tolist()) 
