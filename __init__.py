@@ -147,7 +147,7 @@ class AddTerrainObject(bpy.types.Operator, AddObjectHelper):
         return {'FINISHED'}
     
     
-class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
+class InitTerrainObject(bpy.types.Operator):
     """Modify a Terrain object"""
     bl_idname = "mesh.modify_terrain"
     bl_label = "Modify Terrain"
@@ -213,6 +213,19 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
         bedrock_types = [0, 1, 2]
         for x in range(size_x):
             for y in range(size_y):
+                """ if x < size_x / 4:
+                    topsoil[y + size_y * x] = [0.25, 0.1, 0.0, 0.0, 0.9] # 1.25
+                    subsoil[y + size_y * x] = [0.25, 0.5, 0.25, 0.0, 1.25] # 2.25
+                elif x < size_x / 2:
+                    topsoil[y + size_y * x] = [0.0, 0.0, 0.0, 0.0, 1.25] # 1.25
+                    subsoil[y + size_y * x] = [0.0, 0.0, 0.0, 0.0, 2.25] # 2.25
+                elif x < 3* size_x / 4:
+                    topsoil[y + size_y * x] = [1.25, 0.0, 0.0, 0.0, 0] # 1.25
+                    subsoil[y + size_y * x] = [0.0, 0.0, 2.25, 0.0, 0] # 2.25
+                else:
+                    topsoil[y + size_y * x] = [0.0, 0.0, 0.0, 0.0, 0.0] # 1.25
+                    subsoil[y + size_y * x] = [0.0, 0.0, 0.0, 0.0, 0.0] # 2.25 """
+
                 topsoil[y + size_y * x] = [0.25, 0.1, 0.0, 0.0, 0.9] # 1.25
                 subsoil[y + size_y * x] = [0.25, 0.5, 0.25, 0.0, 1.25] # 2.25
                 bedrock[y + size_y * x] = [3.0, 10.0 ,1000000.0] # rest, formerly heightmap[x][y] - 1.25 - 2.25
@@ -297,7 +310,7 @@ class InitTerrainObject(bpy.types.Operator, AddObjectHelper):
     
     
     
-class ErodeTerrainObject(bpy.types.Operator, AddObjectHelper):
+class ErodeTerrainObject(bpy.types.Operator):
     """Erode a Terrain object"""
     bl_idname = "mesh.erode_terrain"
     bl_label = "Erode Terrain"
@@ -543,7 +556,7 @@ class TERRAIN_PT_Sidebar(bpy.types.Panel):
         col.prop(context.scene.Terrain, "rain_height")
         box.operator("mesh.set_water_level", text="Set water level")
 
-        box.operator("mesh.erode_terrain", text="zeroduj")
+        box.operator("mesh.erode_terrain", text="Erode")
 
 
 # Property definitions

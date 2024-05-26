@@ -324,7 +324,7 @@ cdef void organize_horizon(Horizon& horizon, double needed_height) noexcept nogi
             horizon.topsoil.rocks[i] -= amount
 
 
-cdef double get_soil_talus(Soil soil) noexcept nogil:
+cdef double get_soil_talus(Soil soil, double vegetation) noexcept nogil:
     soil = normalized(soil)
 
     if get_soil_height(soil) <= 0.0:
@@ -336,7 +336,7 @@ cdef double get_soil_talus(Soil soil) noexcept nogil:
     talus += 1.0 * soil.rocks[2]
     talus += 1.0 * soil.rocks[3]
 
-    return talus
+    return talus * (1 + 0.2 * vegetation)
 
 
 cdef inline Soil organification(Soil soil, double vegetation, double organification_speed, double delta_t) noexcept nogil:
@@ -627,9 +627,9 @@ cdef void gravitational_erosion(int size_x, int size_y, double delta_t, double d
                     soil_flow[x][y][si + 1][sj + 1] = EMPTY_SOIL
 
             # talus angle will be the smaller of the 2 soils
-            talus = get_soil_talus(terrain[x][y].topsoil)
-            if get_soil_talus(terrain[x][y].subsoil) * 1.25 < talus:
-                talus = get_soil_talus(terrain[x][y].subsoil) * 1.25
+            talus = get_soil_talus(terrain[x][y].topsoil, vegetation[x][y])
+            if get_soil_talus(terrain[x][y].subsoil, vegetation[x][y]) * 1.25 < talus:
+                talus = get_soil_talus(terrain[x][y].subsoil, vegetation[x][y]) * 1.25
 
 
 
@@ -1063,7 +1063,7 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
                     # steepness and convexness
                     #local_shape_factor = max(0.0, 1.0 * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) + 0.0 * get_convexness(x, y, size_x, size_y, heightmap))
                     # no erosion_constant
-                    water_info = erosion_constant * flow_velocity * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) * max_erosion_depth(water[x][y].height)
+                    water_info = erosion_constant * flow_velocity * max(0.05, get_steepness(x, y, size_x, size_y, heightmap)) * max_erosion_depth(water[x][y].height) * (1 / (1 + 0.2 * vegetation[x][y]))
                     
                     # organic
                     sediment_capacity = organic_constant * water_info
@@ -1111,12 +1111,12 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
         for x in range(size_x):
             for y in range(size_y):
                 if water[x][y].height > 0.0:
-                    """ average_height = 0.5 * (water[x][y].height + water[x][y].previous)
+                    average_height = 0.5 * (water[x][y].height + water[x][y].previous)
 
                     # this max function doesn't really have a physical basis, but it makes sure that small amounts of water don't erode ridiculous amounts
-                    average_height = max(average_height, 0.05) """
+                    average_height = max(average_height, 0.05)
 
-                    #velocity = water_velocity_vector(x, y, size_x, size_y, flow) #/ (length * average_height)
+                    velocity = water_velocity_vector(x, y, size_x, size_y, flow) #/ (length * average_height)
                     
                     
 
@@ -1124,10 +1124,9 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
                     water_bottom = heightmap[x][y]
                     
                     for i in range(4):
-                        velocity_in_direction = max(0.0, water[x][y].velocity_x*delta_x[i] + water[x][y].velocity_y*delta_y[i])
-                        """ if x == size_x / 2 and size_y / 4 < y < 3 * size_y / 4:
-                            print("velocity in y=" + str(y) + ": " + str(delta_x[i]) + ", " + str(delta_y[i]) + ": " + str(velocity_in_direction))
- """
+                        #velocity_in_direction = max(0.0, water[x][y].velocity_x*delta_x[i] + water[x][y].velocity_y*delta_y[i])
+                        velocity_in_direction = max(0.0, velocity[0]*delta_x[i] + velocity[1]*delta_y[i])
+                    
                         height_top = heightmap[mod(x + delta_x[i], size_x)][mod(y + delta_y[i], size_y)]
                         height_bottom = height_top - get_soil_height(terrain[x][y].topsoil)
 
@@ -1318,7 +1317,7 @@ cpdef erode(unsigned int steps, double delta_t, double erosion_constant, double 
                     # how good the soil is for the plants
                     soil_conditions = (1 - vegetation[x][y]) * (ORGANIC_VEGETATION_MULIPLITER * average_soil_shallow.organic + rocks_shallow) + vegetation[x][y] * (ORGANIC_VEGETATION_MULIPLITER * average_soil_deep.organic + rocks_deep) - vegetation_base
 
-                    vegetation2[x][y] = min(max(0.0, vegetation[x][y] + random(0, 1) * delta_t * vegetation_spread_speed * (soil_conditions - 0.8 * vegetation[x][y]) * (1 + NEIGHBOR_VEGETATION_MULTIPLIER * neighbor_vegetation)), 1.0)
+                    vegetation2[x][y] = min(max(0.0, vegetation[x][y] + random(0, 1) * delta_t * vegetation_spread_speed * (soil_conditions - 0.8 * vegetation[x][y] + NEIGHBOR_VEGETATION_MULTIPLIER * neighbor_vegetation)), 1.0)
 
         for x in range(size_x):
             for y in range(size_y):
